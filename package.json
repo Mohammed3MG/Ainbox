@@ -10,6 +10,7 @@
   "license": "ISC",
   "description": "",
   "dependencies": {
+    "imapflow": "^1.0.164",
     "node-fetch": "^2.6.9",
     "nodemailer": "^6.9.14",
     "bcrypt": "^6.0.0",

@@ -11,6 +11,17 @@ async function httpGet(url, accessToken) {
   return fetch2(url, { headers });
 }
 
+async function httpPostJson(url, accessToken, body) {
+  const headers = {
+    Authorization: `Bearer ${accessToken}`,
+    'Content-Type': 'application/json'
+  };
+  const opts = { method: 'POST', headers, body: JSON.stringify(body) };
+  if (typeof fetch === 'function') return fetch(url, opts);
+  const fetch2 = (await import('node-fetch')).default;
+  return fetch2(url, opts);
+}
+
 async function readJsonSafe(resp) {
   try {
     return await resp.json();
@@ -229,3 +240,160 @@ router.get('/outlook/message/:id', requireAuth, async (req, res) => {
 });
 
 module.exports = router;
+
+// -------- Compose (send) via Microsoft Graph --------
+// Allowed file types/extensions (aligned with Gmail/SMTP compose)
+const ALLOWED_MIME = new Set([
+  'application/pdf',
+  'text/plain',
+  'text/html',
+  'image/jpeg',
+  'image/png',
+  'image/gif',
+  'image/webp',
+  'image/svg+xml',
+  'application/zip',
+  'application/x-zip-compressed',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document', // docx
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', // xlsx
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation', // pptx
+]);
+const FORBIDDEN_EXT = new Set(['.exe', '.bat', '.cmd', '.sh', '.js', '.msi', '.apk', '.dmg', '.iso', '.dll', '.scr']);
+
+function toArray(x) {
+  if (!x) return [];
+  return Array.isArray(x) ? x.filter(Boolean) : String(x).split(',').map(s => s.trim()).filter(Boolean);
+}
+
+function validateEmailAddress(addr) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(addr);
+}
+
+function hasForbiddenExtension(filename) {
+  const lower = (filename || '').toLowerCase();
+  for (const ext of FORBIDDEN_EXT) {
+    if (lower.endsWith(ext)) return true;
+  }
+  return false;
+}
+
+function base64LenToBytes(b64) {
+  const len = b64.length;
+  const padding = (b64.endsWith('==') ? 2 : (b64.endsWith('=') ? 1 : 0));
+  return Math.floor((len * 3) / 4) - padding;
+}
+
+function validateAttachments(attachments, maxTotalBytes) {
+  let total = 0;
+  for (const a of attachments) {
+    if (!a || typeof a !== 'object') throw new Error('Invalid attachment');
+    const { filename, contentType, data } = a;
+    if (!filename || !contentType || !data) throw new Error('Attachment missing fields');
+    if (hasForbiddenExtension(filename)) throw new Error(`Forbidden file type: ${filename}`);
+    if (!ALLOWED_MIME.has(contentType)) throw new Error(`Unsupported MIME type: ${contentType}`);
+    const bytes = base64LenToBytes(data);
+    if (bytes <= 0) throw new Error(`Invalid attachment data for ${filename}`);
+    total += bytes;
+    if (bytes > 25 * 1024 * 1024) throw new Error(`Attachment too large (>25MB): ${filename}`);
+  }
+  if (total > maxTotalBytes) throw new Error('Total attachments exceed allowed size');
+  return total;
+}
+
+function sanitizeHtml(html) {
+  return String(html || '').replace(/<script[\s\S]*?>[\s\S]*?<\/script>/gi, '');
+}
+
+router.post('/outlook/compose', requireAuth, async (req, res) => {
+  try {
+    const {
+      to,
+      cc,
+      bcc,
+      subject = '',
+      text = '',
+      html = '',
+      attachments = [], // [{ filename, contentType, data(base64), inline?, contentId? }]
+      saveToSentItems = true,
+      returnId = true
+    } = req.body || {};
+
+    const toList = toArray(to);
+    const ccList = toArray(cc);
+    const bccList = toArray(bcc);
+
+    if (!toList.length) return res.status(400).json({ error: 'At least one recipient required' });
+    for (const addr of [...toList, ...ccList, ...bccList]) {
+      if (!validateEmailAddress(addr)) return res.status(400).json({ error: `Invalid recipient: ${addr}` });
+    }
+
+    const MAX_TOTAL_BYTES = Math.min((parseInt(process.env.MAX_EMAIL_TOTAL_MB || '25', 10)) * 1024 * 1024, 50 * 1024 * 1024);
+    validateAttachments(attachments, MAX_TOTAL_BYTES);
+
+    const token = await ensureMsAccessToken(req, res);
+    const bodyContent = html ? sanitizeHtml(html) : (text || '');
+    const bodyType = html ? 'HTML' : 'Text';
+
+    const toRecipients = toList.map(a => ({ emailAddress: { address: a } }));
+    const ccRecipients = ccList.map(a => ({ emailAddress: { address: a } }));
+    const bccRecipients = bccList.map(a => ({ emailAddress: { address: a } }));
+
+    const graphAttachments = attachments.map(a => ({
+      '@odata.type': '#microsoft.graph.fileAttachment',
+      name: a.filename,
+      contentType: a.contentType,
+      contentBytes: a.data,
+      isInline: !!a.inline,
+      contentId: a.contentId || undefined
+    }));
+
+    if (returnId) {
+      // Create, then send — returns the message id before sending
+      const createBody = {
+        subject,
+        body: { contentType: bodyType, content: bodyContent },
+        toRecipients,
+        ccRecipients: ccRecipients.length ? ccRecipients : undefined,
+        bccRecipients: bccRecipients.length ? bccRecipients : undefined,
+        attachments: graphAttachments.length ? graphAttachments : undefined
+      };
+      const createResp = await httpPostJson('https://graph.microsoft.com/v1.0/me/messages', token, createBody);
+      const created = await readJsonSafe(createResp);
+      if (!createResp.ok) {
+        return res.status(400).json({ error: created.error?.message || created._raw || `HTTP ${createResp.status}`, code: created.error?.code, source: 'graph:createMessage' });
+      }
+      const messageId = created.id;
+      const sendResp = await httpPostJson(`https://graph.microsoft.com/v1.0/me/messages/${encodeURIComponent(messageId)}/send`, token, {});
+      if (!sendResp.ok && sendResp.status !== 202) {
+        const s = await readJsonSafe(sendResp);
+        return res.status(400).json({ error: s.error?.message || s._raw || `HTTP ${sendResp.status}`, code: s.error?.code, source: 'graph:sendMessage' });
+      }
+      if (!saveToSentItems) {
+        // Graph send always saves to Sent by default; skipping deletion to keep logic simple
+      }
+      return res.json({ ok: true, id: messageId });
+    } else {
+      // Direct sendMail (no id returned)
+      const sendBody = {
+        message: {
+          subject,
+          body: { contentType: bodyType, content: bodyContent },
+          toRecipients,
+          ccRecipients: ccRecipients.length ? ccRecipients : undefined,
+          bccRecipients: bccRecipients.length ? bccRecipients : undefined,
+          attachments: graphAttachments.length ? graphAttachments : undefined
+        },
+        saveToSentItems
+      };
+      const resp = await httpPostJson('https://graph.microsoft.com/v1.0/me/sendMail', token, sendBody);
+      if (!resp.ok && resp.status !== 202) {
+        const j = await readJsonSafe(resp);
+        return res.status(400).json({ error: j.error?.message || j._raw || `HTTP ${resp.status}`, code: j.error?.code, source: 'graph:sendMail' });
+      }
+      return res.json({ ok: true });
+    }
+  } catch (e) {
+    console.error(e);
+    return res.status(400).json({ error: e?.message || 'Compose failed' });
+  }
+});
