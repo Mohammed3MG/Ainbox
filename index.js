@@ -4,7 +4,9 @@ const passport = require('passport');
 const { redirectIfAuthenticated } = require('./middleware/auth');
 const authRouter = require('./routes/auth');
 const gmailRouter = require('./routes/gmail');
+const outlookMailRouter = require('./routes/outlook');
 const { configureGoogleStrategy, router: googleRouter } = require('./auth/google');
+const { router: outlookRouter } = require('./auth/outlook');
 const mailRouter = require('./routes/mail');
 const helmet = require('helmet');
 const cors = require('cors');
@@ -25,14 +27,16 @@ configureGoogleStrategy(passport);
 
 // Mount routers
 app.use(googleRouter);
+app.use(outlookRouter);
 app.use(authRouter);
 app.use(gmailRouter);
+app.use(outlookMailRouter);
 app.use(mailRouter);
 
 
 // Public home
 app.get('/', redirectIfAuthenticated, (req, res) => {
-  res.send('<a href="/google">Login with Google</a>');
+  res.send('<div style="display:flex;gap:12px;"><a href="/google">Login with Google</a><a href="/auth/outlook">Login with Outlook</a></div>');
 });
 
 app.listen(3000, () => {
