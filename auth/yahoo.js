@@ -31,7 +31,7 @@ function yahooAuthUrls() {
   };
 }
 
-router.get('fr', (req, res) => {
+router.get('/auth/yahoo', (req, res) => {
   try {
     const { authorize } = yahooAuthUrls();
     // Ensure mail scopes are present for IMAP/SMTP OAuth2
