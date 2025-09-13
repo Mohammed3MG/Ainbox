@@ -31,10 +31,13 @@ function yahooAuthUrls() {
   };
 }
 
-router.get('/auth/yahoo', (req, res) => {
+router.get('fr', (req, res) => {
   try {
     const { authorize } = yahooAuthUrls();
-    const scope = (process.env.YAHOO_SCOPES || 'openid profile email').split(/[\s,]+/).filter(Boolean).join(' ');
+    // Ensure mail scopes are present for IMAP/SMTP OAuth2
+    const scopeSet = new Set((process.env.YAHOO_SCOPES || 'openid profile email mail-rw').split(/[\s,]+/).filter(Boolean));
+    if (!scopeSet.has('mail-r') && !scopeSet.has('mail-w') && !scopeSet.has('mail-rw')) scopeSet.add('mail-rw');
+    const scope = Array.from(scopeSet).join(' ');
     const state = uuidv4();
     res.cookie('yahoo_oauth_state', state, cookieOpts(10 * 60 * 1000));
 
@@ -44,6 +47,7 @@ router.get('/auth/yahoo', (req, res) => {
       response_type: 'code',
       scope,
       state,
+      prompt: 'consent',
     });
     return res.redirect(`${authorize}?${params.toString()}`);
   } catch (e) {
@@ -135,4 +139,3 @@ router.get('/auth/yahoo/callback', async (req, res) => {
 });
 
 module.exports = { router };
-
