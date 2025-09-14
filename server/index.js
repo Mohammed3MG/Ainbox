@@ -11,6 +11,7 @@ const outlookMailRouter = require('./routes/outlook');
 const { configureGoogleStrategy, router: googleRouter } = require('./auth/google');
 const { router: outlookRouter } = require('./auth/outlook');
 const { router: yahooRouter } = require('./auth/yahoo');
+const { router: otherRouter } = require('./routes/other');
 const mailRouter = require('./routes/mail');
 const helmet = require('helmet');
 const cors = require('cors');
@@ -18,6 +19,8 @@ const cookieParser = require('cookie-parser');
 
 const app = express();
 app.use(helmet());
+// Serve static assets (for CSP-compliant scripts like /other.js)
+app.use(express.static('public'));
 app.use(cors({
   origin: true, // adjust to your frontend origin in prod
   credentials: true
@@ -38,11 +41,12 @@ app.use(outlookMailRouter);
 app.use(yahooRouter);
 app.use(require('./routes/yahoo'));
 app.use(mailRouter);
+app.use(otherRouter);
 
 
 // Public home
 app.get('/', redirectIfAuthenticated, (req, res) => {
-  res.send('<div style="display:flex;gap:12px;"><a href="/google">Login with Google</a><a href="/auth/outlook">Login with Outlook</a><a href="/auth/yahoo">Login with Yahoo</a></div>');
+  res.send('<div style="display:flex;gap:12px;"><a href="/google">Login with Google</a><a href="/auth/outlook">Login with Outlook</a><a href="/auth/yahoo">Login with Yahoo</a><a href="/other">Other (IMAP/SMTP or Exchange)</a></div>');
 });
 
 

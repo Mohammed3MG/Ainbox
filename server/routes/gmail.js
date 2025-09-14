@@ -290,7 +290,24 @@ router.get('/threads/:id', requireAuth, async (req, res) => {
       userId: 'me',
       id: req.params.id,
       format: 'full',
-      fields: 'id,messages(id,labelIds,payload(headers,name,value,filename,body/attachmentId,body/data,body/size,parts),snippet,threadId)'
+      // Corrected fields selector: nest header subfields under headers(...),
+      // and include mimeType + recursive part fields for attachment parsing.
+      fields:
+        'id,' +
+        'messages(' +
+          'id,threadId,labelIds,snippet,' +
+          'payload(' +
+            'headers(name,value),' +
+            'mimeType,filename,' +
+            'body(attachmentId,data,size),' +
+            'parts(' +
+              'filename,mimeType,' +
+              'headers(name,value),' +
+              'body(attachmentId,data,size),' +
+              'parts' +
+            ')' +
+          ')' +
+        ')'
     });
 
     const out = [];

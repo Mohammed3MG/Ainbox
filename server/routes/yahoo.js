@@ -4,19 +4,19 @@ const { ensureYahooAccessToken } = require('../utils/yahooClient');
 const { query } = require('../lib/db');
 const { ImapFlow } = require('imapflow');
 const nodemailer = require('nodemailer');
+const { decrypt } = require('../utils/secure');
 
 const router = express.Router();
 
-async function withImap(email, accessToken, fn) {
+async function withImapAuth(auth, fn) {
+  const useXoauth2 = auth.type === 'xoauth2';
   const client = new ImapFlow({
     host: 'imap.mail.yahoo.com',
     port: 993,
     secure: true,
-    auth: {
-      user: email,
-      accessToken,
-      method: 'XOAUTH2'
-    }
+    auth: useXoauth2
+      ? { user: auth.user, accessToken: auth.accessToken, method: 'XOAUTH2' }
+      : { user: auth.user, pass: auth.pass }
   });
   try {
     await client.connect();
@@ -40,15 +40,73 @@ async function getUserEmailById(req) {
   return rows[0].email;
 }
 
+// async function getYahooAuth(req, res) {
+//   // Prefer OAuth2 (cookies + refresh). Fallback to app password if configured.
+//   const email = await getUserEmailById(req);
+//   // Check secure cookie containing app password (encrypted)
+//   if (req.cookies && req.cookies.yh_pw) {
+//     try {
+//       const pass = decrypt(req.cookies.yh_pw);
+//       if (pass) return { type: 'password', user: email, pass };
+//     } catch (_) {}
+//   }
+//   try {
+//     const access = await ensureYahooAccessToken(req, res);
+//     return { type: 'xoauth2', user: email, accessToken: access };
+//   } catch (_) {
+//     // fallback if env has app password
+//     const user = process.env.YAHOO_IMAP_USER || email;
+//     const pass = process.env.YAHOO_APP_PASSWORD;
+//     if (!pass) throw new Error('Missing Yahoo tokens and no app password configured');
+//     return { type: 'password', user, pass };
+//   }
+// }
+
+
+async function getYahooAuth(req, res) {
+  const email = await getUserEmailById(req);
+
+  // 1. Check cookie with encrypted app password
+  if (req.cookies && req.cookies.yh_pw) {
+    try {
+      const pass = decrypt(req.cookies.yh_pw);
+      if (pass) {
+        return { type: 'password', user: email, pass };
+      }
+    } catch (_) {}
+  }
+
+  // 2. Try OAuth2 (if user logged in with Yahoo OAuth)
+  try {
+    const access = await ensureYahooAccessToken(req, res);
+    if (access) {
+      return { type: 'xoauth2', user: email, accessToken: access };
+    }
+  } catch (e) {
+    console.warn('Yahoo OAuth2 failed, will try fallback:', e.message);
+  }
+
+  // 3. Fallback to .env Yahoo App Password
+  if (process.env.YAHOO_APP_PASSWORD) {
+    return {
+      type: 'password',
+      user: process.env.YAHOO_IMAP_USER || email,
+      pass: process.env.YAHOO_APP_PASSWORD
+    };
+  }
+
+  throw new Error('No valid Yahoo authentication available (OAuth2 or App Password required)');
+}
+
+
+
 router.get('/yahoo/messages', requireAuth, async (req, res) => {
   try {
     const folder = (req.query.folder || 'INBOX').toString(); // IMAP names
     const limit = Math.min(parseInt(req.query.top || '20', 10), 50);
     const unreadOnly = String(req.query.unread || 'false') === 'true';
-    const emailHeader = await getUserEmailById(req);
-
-    const access = await ensureYahooAccessToken(req, res);
-    const items = await withImap(emailHeader, access, async (imap) => {
+    const auth = await getYahooAuth(req, res);
+    const items = await withImapAuth(auth, async (imap) => {
       await imap.mailboxOpen(folder, { readOnly: true });
       // Get last N sequence numbers
       const lock = await imap.getMailboxLock(folder);
@@ -92,11 +150,10 @@ router.get('/yahoo/message/:uid', requireAuth, async (req, res) => {
   try {
     const folder = (req.query.folder || 'INBOX').toString();
     const uid = Number(req.params.uid);
-    const emailHeader = await getUserEmailById(req);
-    const access = await ensureYahooAccessToken(req, res);
+    const auth = await getYahooAuth(req, res);
     const includeAttachments = String(req.query.includeAttachments || 'false') === 'true';
 
-    const data = await withImap(emailHeader, access, async (imap) => {
+    const data = await withImapAuth(auth, async (imap) => {
       await imap.mailboxOpen(folder, { readOnly: true });
       const fetchOpts = { envelope: true, source: true, bodyStructure: true, flags: true };
       const iter = imap.fetch({ uid }, fetchOpts);
@@ -207,13 +264,20 @@ router.post('/yahoo/compose', requireAuth, async (req,res)=>{
     const MAX_TOTAL = Math.min((parseInt(process.env.MAX_EMAIL_TOTAL_MB||'25',10))*1024*1024, 50*1024*1024);
     validateAttachments(attachments, MAX_TOTAL);
     const email = await getUserEmailById(req);
-    const access = await ensureYahooAccessToken(req,res);
+    let transportAuth;
+    try {
+      const access = await ensureYahooAccessToken(req,res);
+      transportAuth = { type: 'OAuth2', user: email, accessToken: access };
+    } catch (_) {
+      if (!process.env.YAHOO_APP_PASSWORD) throw _;
+      transportAuth = { user: process.env.YAHOO_IMAP_USER || email, pass: process.env.YAHOO_APP_PASSWORD };
+    }
 
     const transporter = nodemailer.createTransport({
       host: 'smtp.mail.yahoo.com',
       port: 465,
       secure: true,
-      auth: { type: 'OAuth2', user: email, accessToken: access }
+      auth: transportAuth
     });
     const mail = {
       from: email,
@@ -230,5 +294,28 @@ router.post('/yahoo/compose', requireAuth, async (req,res)=>{
   }catch(e){
     console.error(e);
     return res.status(400).json({ error: e?.message || 'Yahoo compose failed' });
+  }
+});
+
+// Simple end-to-end test: read last 5 subjects and send a test mail
+// List available Yahoo IMAP folders (paths and special-use flags)
+router.get('/yahoo/folders', requireAuth, async (req, res) => {
+  try {
+    const email = await getUserEmailById(req);
+    const access = await ensureYahooAccessToken(req, res);
+    const folders = [];
+    await withImap(email, access, async (imap) => {
+      for await (const box of imap.list()) {
+        folders.push({
+          path: box.path,
+          flags: box.flags || [],
+          specialUse: box.specialUse || null
+        });
+      }
+    });
+    return res.json({ folders });
+  } catch (e) {
+    console.error(e);
+    return res.status(401).json({ error: 'Unable to list Yahoo folders', reason: e?.message });
   }
 });
