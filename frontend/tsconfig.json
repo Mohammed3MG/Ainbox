@@ -1,0 +1,14 @@
+{
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["src/*"]
+    },
+    "jsx": "react-jsx",
+    "allowJs": true,
+    "checkJs": false,
+    "types": ["vite/client"]
+  },
+  "include": ["src", "vite.config.js"]
+}
+
