@@ -1,22 +1,11 @@
-import { useEffect, useState } from 'react';
-import { getSession } from '../services/sessionApi';
+import { useContext } from 'react';
+import { SessionContext } from '../components/session/SessionProvider';
 
 export function useSession() {
-  const [state, setState] = useState({ loading: true, user: null, terms: { required: false, version: null, acceptedAt: null }, error: null });
-
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const data = await getSession();
-        if (!cancelled) setState({ loading: false, user: data.user, terms: data.terms, error: null });
-      } catch (e) {
-        if (!cancelled) setState({ loading: false, user: null, terms: { required: false, version: null, acceptedAt: null }, error: e });
-      }
-    })();
-    return () => { cancelled = true; };
-  }, []);
-
-  return state;
+  const ctx = useContext(SessionContext);
+  if (!ctx) {
+    // Soft fallback to avoid hard crash if provider not mounted
+    return { loading: true, user: null, terms: { required: false, version: null, acceptedAt: null }, error: null, refresh: async () => {} };
+  }
+  return ctx;
 }
-

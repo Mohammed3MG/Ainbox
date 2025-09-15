@@ -1,11 +1,13 @@
 import { useEffect, useState } from 'react';
 import { acceptTerms, getTerms } from '../services/sessionApi';
 import { useNavigate } from 'react-router-dom';
+import { useSession } from '../hooks/useSession';
 
 export default function Terms() {
   const [meta, setMeta] = useState({ version: 'v1', title: 'Terms of Use', htmlUrl: null, mdUrl: null });
   const [submitting, setSubmitting] = useState(false);
   const navigate = useNavigate();
+  const { refresh, markTermsAccepted } = useSession() || {};
 
   useEffect(() => {
     (async () => {
@@ -17,6 +19,9 @@ export default function Terms() {
     try {
       setSubmitting(true);
       await acceptTerms(meta.version);
+      // Update client session quickly to avoid guard bounce
+      if (typeof markTermsAccepted === 'function') markTermsAccepted();
+      if (typeof refresh === 'function') await refresh();
       navigate('/dashboard', { replace: true });
     } finally {
       setSubmitting(false);
@@ -48,4 +53,3 @@ export default function Terms() {
     </div>
   );
 }
-
