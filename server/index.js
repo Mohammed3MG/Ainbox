@@ -19,6 +19,7 @@ const cookieParser = require('cookie-parser');
 const apiV1 = require('./routes/api_v1');
 
 const app = express();
+const { runMigrations } = require('./lib/migrate');
 app.use(helmet());
 // Serve static assets (for CSP-compliant scripts like /other.js)
 app.use(express.static('public'));
@@ -63,12 +64,20 @@ const sslOptions = {
 //     console.log('Server is running at Port 3000');
 // });
 
-// Start HTTP (Google & Microsoft can use this)
-http.createServer(app).listen(process.env.HTTP_PORT || 3000, () => {
-  console.log(`✅ HTTP server running at http://localhost:${process.env.HTTP_PORT || 3000}`);
-});
+// Run minimal migrations and start servers
+(async () => {
+  try {
+    await runMigrations();
+    console.log('🛠️  DB migrations applied.');
+  } catch (e) {
+    console.error('Migration failed:', e);
+  }
 
-// Start HTTPS (Yahoo will use this)
-https.createServer(sslOptions, app).listen(process.env.HTTPS_PORT || 3443, () => {
-  console.log(`🔒 HTTPS server running at https://localhost:${process.env.HTTPS_PORT || 3443}`);
-});
+  http.createServer(app).listen(process.env.HTTP_PORT || 3000, () => {
+    console.log(`✅ HTTP server running at http://localhost:${process.env.HTTP_PORT || 3000}`);
+  });
+
+  https.createServer(sslOptions, app).listen(process.env.HTTPS_PORT || 3443, () => {
+    console.log(`🔒 HTTPS server running at https://localhost:${process.env.HTTPS_PORT || 3443}`);
+  });
+})();
