@@ -15,3 +15,9 @@ export async function acceptTerms(version) {
   return res.data;
 }
 
+export async function logout() {
+  // Call server logout to clear cookies and invalidate session
+  // Using POST for API-style usage (GET would redirect)
+  await apiFetch('/auth/logout', { method: 'POST' });
+  return { ok: true };
+}
