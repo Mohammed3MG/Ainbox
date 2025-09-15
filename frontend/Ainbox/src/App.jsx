@@ -1,4 +1,5 @@
 import ThemeChange from "./components/ThemeChange"
+import Home from "./components/appComponents/home"
 
 function App() {
 
@@ -7,9 +8,7 @@ function App() {
     <>
       {/* <ThemeChange> </ThemeChange> */}
 
-      <h1 className="text-xl font-bold">
-        Hello world!
-      </h1>
+      <Home/>
     </>
   )
 }

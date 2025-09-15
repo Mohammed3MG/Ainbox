@@ -120,3 +120,45 @@
   }
 }
 
+
+
+
+ .wrap{
+    width:360px; height:260px; border-radius:22px; background:#f7f7fb;
+    display:grid; place-items:center;
+  }
+
+  svg{ overflow:visible; }
+
+  /* Make CSS transforms behave on SVG shapes */
+  .spark { transform-box: fill-box; transform-origin: 50% 50%; }
+
+  .spark--fill{ filter:url(#glow); }
+
+  /* Outline sparkles */
+  .spark--stroke{
+    fill: none;
+    stroke: url(#aiGrad);
+    stroke-width: 8;
+    stroke-linejoin: round;
+    stroke-linecap: round;
+  }
+
+  /* Animations */
+  @keyframes floatSpin {
+    0%   { transform: rotate(0deg)   scale(0.1); opacity:0; }
+    15%  { opacity:1; }
+    45%  { transform: rotate(180deg) scale(1.05); opacity:0.95; }
+    70%  { transform: rotate(270deg) scale(0.55); opacity:0.5; }
+    100% { transform: rotate(360deg) scale(0.05); opacity:0; }
+  }
+
+  .spark--1{ animation: floatSpin 6.5s ease-in-out infinite; }
+  .spark--2{ animation: floatSpin 5.2s ease-in-out infinite 0.5s; }
+  .spark--3{ animation: floatSpin 7.4s ease-in-out infinite 0.9s; }
+
+  /* Motion safety */
+  @media (prefers-reduced-motion: reduce){
+    .spark--1,.spark--2,.spark--3{ animation: none; opacity:1; transform:none; }
+  }
+
