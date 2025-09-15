@@ -1,8 +1,9 @@
-import { Navigate } from 'react-router-dom';
+import { Navigate, useLocation } from 'react-router-dom';
 import { useSession } from '../../hooks/useSession';
 
 export default function ProtectedRoute({ children }) {
   const { loading, user, terms } = useSession();
+  const location = useLocation();
 
   if (loading) {
     return (
@@ -16,10 +17,9 @@ export default function ProtectedRoute({ children }) {
     return <Navigate to="/" replace />;
   }
 
-  if (terms?.required) {
+  if (terms?.required && location.pathname !== '/terms') {
     return <Navigate to="/terms" replace />;
   }
 
   return children;
 }
-
