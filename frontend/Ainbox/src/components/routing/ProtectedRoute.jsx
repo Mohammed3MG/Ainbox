@@ -18,7 +18,14 @@ export default function ProtectedRoute({ children }) {
   }
 
   if (terms?.required && location.pathname !== '/terms') {
-    return <Navigate to="/terms" replace />;
+    const from = `${location.pathname}${location.search}${location.hash}`;
+    return <Navigate to="/terms" replace state={{ from }} />;
+  }
+
+  // If terms already accepted, block access to /terms
+  if (!terms?.required && location.pathname === '/terms') {
+    const to = (location.state && location.state.from && location.state.from !== '/terms') ? location.state.from : '/dashboard';
+    return <Navigate to={to} replace />;
   }
 
   return children;
