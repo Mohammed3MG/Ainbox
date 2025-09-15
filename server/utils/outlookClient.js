@@ -38,7 +38,10 @@ function decodeJwtExp(token) {
   }
 }
 
-async function refreshMsAccessToken(refreshToken, res) {
+const { query } = require('../lib/db');
+const { decrypt, encrypt } = require('./secure');
+
+async function refreshMsAccessToken(refreshToken, req, res) {
   const resp = await httpPostForm(tokenEndpoint(), {
     client_id: process.env.MICROSOFT_CLIENT_ID,
     client_secret: process.env.MICROSOFT_CLIENT_SECRET,
@@ -66,6 +69,26 @@ async function refreshMsAccessToken(refreshToken, res) {
     path: '/',
     maxAge: expiresIn * 1000,
   });
+  // If refresh token rotated, persist to DB and update cookie
+  if (json.refresh_token) {
+    try {
+      const userId = Number(req.auth?.sub);
+      if (userId) {
+        const enc = encrypt(json.refresh_token);
+        await query(
+          `UPDATE accounts SET refresh_token_encrypted=$1, updated_at=NOW() WHERE user_id=$2 AND provider='microsoft'`,
+          [enc, userId]
+        );
+      }
+    } catch (_) {}
+    res.cookie('ms_refresh_token', json.refresh_token, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'lax',
+      path: '/',
+      maxAge: 30 * 24 * 3600 * 1000,
+    });
+  }
   return accessToken;
 }
 
@@ -73,6 +96,18 @@ async function ensureMsAccessToken(req, res) {
   const cookies = req.cookies || {};
   const refreshToken = cookies.ms_refresh_token;
   let accessToken = cookies.ms_access_token;
+  // Fallback: try DB for refresh token
+  async function dbRefresh() {
+    try {
+      const userId = Number(req.auth?.sub);
+      if (!userId) return null;
+      const { rows } = await query('SELECT refresh_token_encrypted FROM accounts WHERE user_id=$1 AND provider=$2', [userId, 'microsoft']);
+      const enc = rows[0]?.refresh_token_encrypted;
+      return enc ? decrypt(enc) : null;
+    } catch (_) {
+      return null;
+    }
+  }
 
   // If we have an access token, verify it isn't expired (or close to expiring)
   if (accessToken) {
@@ -84,15 +119,22 @@ async function ensureMsAccessToken(req, res) {
     // Expired or unknown exp: try to refresh if we have a refresh token
     if (refreshToken) {
       try {
-        return await refreshMsAccessToken(refreshToken, res);
+        return await refreshMsAccessToken(refreshToken, req, res);
       } catch (e) {
-        // Fall through to error below
+        // Fall through to db fallback
       }
+    }
+    const rt2 = await dbRefresh();
+    if (rt2) {
+      try {
+        return await refreshMsAccessToken(rt2, req, res);
+      } catch (_) {}
     }
   }
 
-  if (!refreshToken) throw new Error('Missing Microsoft tokens; login via /auth/outlook');
-  return refreshMsAccessToken(refreshToken, res);
+  const rt = refreshToken || await dbRefresh();
+  if (!rt) throw new Error('Missing Microsoft tokens; login via /auth/outlook');
+  return refreshMsAccessToken(rt, req, res);
 }
 
 module.exports = { ensureMsAccessToken };

@@ -16,6 +16,7 @@ const mailRouter = require('./routes/mail');
 const helmet = require('helmet');
 const cors = require('cors');
 const cookieParser = require('cookie-parser');
+const apiV1 = require('./routes/api_v1');
 
 const app = express();
 app.use(helmet());
@@ -42,6 +43,7 @@ app.use(yahooRouter);
 app.use(require('./routes/yahoo'));
 app.use(mailRouter);
 app.use(otherRouter);
+app.use('/api/v1', apiV1);
 
 
 // Public home

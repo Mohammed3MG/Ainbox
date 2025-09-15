@@ -245,7 +245,7 @@ router.post('/compose', requireAuth, async (req, res) => {
     const raw = encodeBase64Url(Buffer.from(mime, 'utf-8'));
 
     if (provider === 'gmail') {
-      const oauth2Client = getGoogleOAuthClientFromCookies(req);
+      const oauth2Client = await getGoogleOAuthClientFromCookies(req);
       // Preferred: refresh token; fallback access token for short-lived sends
       const { refreshToken, accessToken } = getGoogleTokensFromReq(req);
       if (refreshToken) oauth2Client.setCredentials({ refresh_token: refreshToken });
@@ -296,7 +296,7 @@ router.post('/reply', requireAuth, async (req, res) => {
     let references;
 
     if (provider === 'gmail') {
-      const oauth2Client = getGoogleOAuthClientFromCookies(req);
+      const oauth2Client = await getGoogleOAuthClientFromCookies(req);
       const { refreshToken, accessToken } = getGoogleTokensFromReq(req);
       if (refreshToken) oauth2Client.setCredentials({ refresh_token: refreshToken });
       else if (accessToken) oauth2Client.setCredentials({ access_token: accessToken });
@@ -364,7 +364,7 @@ router.get('/message/:id', requireAuth, async (req, res) => {
   try {
     const provider = (req.query.provider || 'gmail').toString();
     if (provider !== 'gmail') return res.status(501).json({ error: 'Fetching messages only supported for Gmail in this API' });
-    const oauth2Client = getGoogleOAuthClientFromCookies(req);
+    const oauth2Client = await getGoogleOAuthClientFromCookies(req);
     const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
     const msg = await gmail.users.messages.get({ userId: 'me', id: req.params.id, format: 'full' });
     return res.json(msg.data);

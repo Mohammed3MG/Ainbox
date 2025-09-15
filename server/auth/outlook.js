@@ -173,9 +173,41 @@ router.get('/auth/outlook/callback', async (req, res) => {
       res.cookie('ms_access_token', accessToken, cookieOpts(Math.max(1, Number(expiresIn || 3600)) * 1000));
     }
     if (refreshToken) {
+      // Persist refresh token in accounts table (encrypted)
+      try {
+        const enc = require('../utils/secure').encrypt(refreshToken);
+        const { v4: uuidv4 } = require('uuid');
+        await query(
+          `INSERT INTO accounts (id, user_id, provider, provider_account_id, email, refresh_token_encrypted, scopes)
+           VALUES ($1, $2, $3, $4, $5, $6, $7)
+           ON CONFLICT (user_id, provider) DO UPDATE SET
+             provider_account_id = EXCLUDED.provider_account_id,
+             email = EXCLUDED.email,
+             refresh_token_encrypted = COALESCE(EXCLUDED.refresh_token_encrypted, accounts.refresh_token_encrypted),
+             scopes = COALESCE(EXCLUDED.scopes, accounts.scopes),
+             updated_at = NOW()`,
+          [uuidv4(), user.id, 'microsoft', msId, email, enc, scopes]
+        );
+      } catch (e) {
+        console.error('Failed to persist Microsoft refresh token:', e.message);
+      }
       res.cookie('ms_refresh_token', refreshToken, cookieOpts(msFromExp('30d')));
     }
 
+    // Decide frontend redirect based on terms acceptance
+    const currentTermsVersion = process.env.TERMS_CURRENT_VERSION || 'v1';
+    let needsTerms = true;
+    try {
+      const { rows: urows } = await query('SELECT terms_version, terms_accepted_at FROM users WHERE id=$1', [user.id]);
+      const u = urows[0];
+      needsTerms = !u?.terms_accepted_at || (u?.terms_version || '') !== currentTermsVersion;
+    } catch (_) { /* keep default */ }
+
+    const base = process.env.FRONTEND_BASE_URL || '';
+    const target = needsTerms ? '/terms' : '/dashboard';
+    if (base && /^https?:\/\//i.test(base)) {
+      return res.redirect(base.replace(/\/$/, '') + target);
+    }
     return res.redirect('/me');
   } catch (e) {
     console.error(e);

@@ -25,7 +25,7 @@ function configureGoogleStrategy(passportInstance) {
         `INSERT INTO users (google_id, email, name, picture)
          VALUES ($1, $2, $3, $4)
          ON CONFLICT (google_id) DO UPDATE SET email=EXCLUDED.email, name=EXCLUDED.name, picture=EXCLUDED.picture
-         RETURNING id, google_id, email, name, picture`,
+         RETURNING id, google_id, email, name, picture, terms_version, terms_accepted_at`,
         [googleId, email, name, picture]
       );
       const user = rows[0];
@@ -52,6 +52,14 @@ router.get('/google/callback',
   async (req, res) => {
     try {
       const user = req.user;
+      // Decide frontend redirect based on terms acceptance
+      const currentTermsVersion = process.env.TERMS_CURRENT_VERSION || 'v1';
+      let needsTerms = true;
+      try {
+        const { rows } = await require('../lib/db').query('SELECT terms_version, terms_accepted_at FROM users WHERE id=$1', [user.id]);
+        const u = rows[0];
+        needsTerms = !u?.terms_accepted_at || (u?.terms_version || '') !== currentTermsVersion;
+      } catch (_) { /* keep default */ }
       const access = signAccessToken({ sub: String(user.id), email: user.email });
       const refreshPlain = signRefreshToken({ sub: String(user.id) });
 
@@ -74,9 +82,34 @@ router.get('/google/callback',
         res.cookie('google_access_token', user.googleAccessToken, cookieOpts(msFromExp('60m')));
       }
       if (user.googleRefreshToken) {
+        // Persist refresh token in accounts table (encrypted)
+        try {
+          const enc = require('../utils/secure').encrypt(user.googleRefreshToken);
+          const { v4: uuidv4 } = require('uuid');
+          await require('../lib/db').query(
+            `INSERT INTO accounts (id, user_id, provider, provider_account_id, email, refresh_token_encrypted, scopes)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)
+             ON CONFLICT (user_id, provider) DO UPDATE SET
+               provider_account_id = EXCLUDED.provider_account_id,
+               email = EXCLUDED.email,
+               refresh_token_encrypted = COALESCE(EXCLUDED.refresh_token_encrypted, accounts.refresh_token_encrypted),
+               scopes = COALESCE(EXCLUDED.scopes, accounts.scopes),
+               updated_at = NOW()`,
+            [uuidv4(), user.id, 'google', user.google_id, user.email, enc, 'gmail.readonly gmail.send openid profile email']
+          );
+        } catch (e) {
+          console.error('Failed to persist Google refresh token:', e.message);
+        }
         res.cookie('google_refresh_token', user.googleRefreshToken, cookieOpts(msFromExp('30d')));
       }
 
+      const base = process.env.FRONTEND_BASE_URL || '';
+      const target = needsTerms ? '/terms' : '/dashboard';
+      // If base is absolute (starts with http), redirect there; else fall back to API endpoint
+      if (base && /^https?:\/\//i.test(base)) {
+        return res.redirect(base.replace(/\/$/, '') + target);
+      }
+      // Fallback: keep legacy behavior
       res.redirect('/me');
     } catch (e) {
       console.error(e);

@@ -87,7 +87,7 @@ async function extractMessage(gmail, message, opts = {}) {
 
 router.get('/emails', requireAuth, async (req, res) => {
   try {
-    const oauth2Client = getGoogleOAuthClientFromCookies(req);
+    const oauth2Client = await getGoogleOAuthClientFromCookies(req);
     const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
 
     const response = await gmail.users.messages.list({
@@ -168,7 +168,7 @@ async function mapWithLimit(items, limit, mapper) {
 // List INBOX threads: latest message metadata only
 router.get('/threads', requireAuth, async (req, res) => {
   try {
-    const oauth2Client = getGoogleOAuthClientFromCookies(req);
+    const oauth2Client = await getGoogleOAuthClientFromCookies(req);
     const gmail = google.gmail({
       version: 'v1', auth: oauth2Client
     });
@@ -226,7 +226,7 @@ router.get('/threads', requireAuth, async (req, res) => {
 // Sent threads list: latest message metadata only
 router.get('/threads/sent', requireAuth, async (req, res) => {
   try {
-    const oauth2Client = getGoogleOAuthClientFromCookies(req);
+    const oauth2Client = await getGoogleOAuthClientFromCookies(req);
     const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
 
     const maxResults = Math.min(parseInt(req.query.maxResults || '20', 10), 50);
@@ -283,7 +283,7 @@ router.get('/threads/sent', requireAuth, async (req, res) => {
 router.get('/threads/:id', requireAuth, async (req, res) => {
   try {
     const includeAttachments = String(req.query.includeAttachments || 'false') === 'true';
-    const oauth2Client = getGoogleOAuthClientFromCookies(req);
+    const oauth2Client = await getGoogleOAuthClientFromCookies(req);
     const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
 
     const t = await gmail.users.threads.get({
@@ -327,7 +327,7 @@ router.get('/threads/:id', requireAuth, async (req, res) => {
 // Drafts list: latest metadata only
 router.get('/drafts', requireAuth, async (req, res) => {
   try {
-    const oauth2Client = getGoogleOAuthClientFromCookies(req);
+    const oauth2Client = await getGoogleOAuthClientFromCookies(req);
     const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
 
     const maxResults = Math.min(parseInt(req.query.maxResults || '20', 10), 50);
@@ -375,7 +375,7 @@ router.get('/drafts', requireAuth, async (req, res) => {
 router.get('/drafts/:id', requireAuth, async (req, res) => {
   try {
     const includeAttachments = String(req.query.includeAttachments || 'false') === 'true';
-    const oauth2Client = getGoogleOAuthClientFromCookies(req);
+    const oauth2Client = await getGoogleOAuthClientFromCookies(req);
     const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
 
     const d = await gmail.users.drafts.get({
