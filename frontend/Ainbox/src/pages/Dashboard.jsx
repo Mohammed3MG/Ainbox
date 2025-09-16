@@ -4,7 +4,7 @@ import LogoutButton from '../components/appComponents/LogoutButton';
 export default function Dashboard() {
   const { user, terms } = useSession();
   return (
-    <div className="min-h-screen w-full bg-slate-950 text-slate-100">
+    <div className="min-h-screen w-full bg-stone-950 text-slate-100">
       <div className="max-w-5xl mx-auto p-6">
         <div className="flex items-center justify-between mb-6">
           <h1 className="text-3xl font-bold">Dashboard</h1>
