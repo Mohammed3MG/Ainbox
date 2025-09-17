@@ -93,7 +93,7 @@ router.get('/emails', requireAuth, async (req, res) => {
     const response = await gmail.users.messages.list({
       userId: 'me',
       maxResults: 2,
-      labelIds: ['INBOX', 'CATEGORY_PERSONAL']
+      labelIds: ['INBOX']
     });
 
     const messages = [];
@@ -149,6 +149,73 @@ router.get('/emails', requireAuth, async (req, res) => {
   }
 });
 
+// Inbox stats: total + unread counts via label
+router.get('/gmail/inbox-stats', requireAuth, async (req, res) => {
+  try {
+    const oauth2Client = await getGoogleOAuthClientFromCookies(req);
+    const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
+    const label = await gmail.users.labels.get({ userId: 'me', id: 'INBOX' });
+    const data = label.data || {};
+    // Prefer thread-based counts so unread decreases by 1 per conversation read
+    const threadsTotal = Number.isFinite(data.threadsTotal) ? data.threadsTotal : data.messagesTotal || 0;
+    const threadsUnread = Number.isFinite(data.threadsUnread) ? data.threadsUnread : data.messagesUnread || 0;
+    return res.json({ total: threadsTotal, unread: threadsUnread });
+  } catch (err) {
+    console.error(err);
+    return res.status(401).json({ error: 'Unable to access Gmail. Reconnect Google.' });
+  }
+});
+
+// Mark Gmail threads read/unread (batch)
+router.post('/gmail/mark-read', requireAuth, async (req, res) => {
+  try {
+    const ids = Array.isArray(req.body?.ids) ? req.body.ids : [];
+    if (!ids.length) return res.status(400).json({ error: 'ids required' });
+    const oauth2Client = await getGoogleOAuthClientFromCookies(req);
+    const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
+    let ok = 0;
+    for (const id of ids) {
+      try {
+        // Remove UNREAD label across the whole thread
+        await gmail.users.threads.modify({
+          userId: 'me',
+          id,
+          requestBody: { removeLabelIds: ['UNREAD'] }
+        });
+        ok += 1;
+      } catch (_) {}
+    }
+    return res.json({ ok, total: ids.length });
+  } catch (e) {
+    console.error('gmail/mark-read failed:', e);
+    return res.status(401).json({ error: 'Unable to mark Gmail threads as read' });
+  }
+});
+
+router.post('/gmail/mark-unread', requireAuth, async (req, res) => {
+  try {
+    const ids = Array.isArray(req.body?.ids) ? req.body.ids : [];
+    if (!ids.length) return res.status(400).json({ error: 'ids required' });
+    const oauth2Client = await getGoogleOAuthClientFromCookies(req);
+    const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
+    let ok = 0;
+    for (const id of ids) {
+      try {
+        await gmail.users.threads.modify({
+          userId: 'me',
+          id,
+          requestBody: { addLabelIds: ['UNREAD'] }
+        });
+        ok += 1;
+      } catch (_) {}
+    }
+    return res.json({ ok, total: ids.length });
+  } catch (e) {
+    console.error('gmail/mark-unread failed:', e);
+    return res.status(401).json({ error: 'Unable to mark Gmail threads as unread' });
+  }
+});
+
 // Simple concurrency-limited mapper
 async function mapWithLimit(items, limit, mapper) {
   const results = new Array(items.length);
@@ -178,7 +245,8 @@ router.get('/threads', requireAuth, async (req, res) => {
     const unread = String(req.query.unread || 'false') === 'true';
     const q = req.query.q || undefined;
 
-    const labelIds = ['INBOX', 'CATEGORY_PERSONAL'];
+    // Include all categories within INBOX (no CATEGORY_* filter)
+    const labelIds = ['INBOX'];
     if (unread) labelIds.push('UNREAD');
 
     const listResp = await gmail.users.threads.list({
@@ -187,7 +255,8 @@ router.get('/threads', requireAuth, async (req, res) => {
       labelIds,
       pageToken,
       q,
-      fields: 'nextPageToken,threads/id'
+      // include resultSizeEstimate for totals
+      fields: 'nextPageToken,threads/id,resultSizeEstimate'
     });
 
     const ids = (listResp.data.threads || []).map(t => t.id);
@@ -215,7 +284,8 @@ router.get('/threads', requireAuth, async (req, res) => {
 
     res.json({
       nextPageToken: listResp.data.nextPageToken || null,
-      threads: details.filter(Boolean)
+      threads: details.filter(Boolean),
+      total: typeof listResp.data.resultSizeEstimate === 'number' ? listResp.data.resultSizeEstimate : undefined
     });
   } catch (err) {
     console.error(err);
@@ -243,7 +313,7 @@ router.get('/threads/sent', requireAuth, async (req, res) => {
       labelIds,
       pageToken,
       q,
-      fields: 'nextPageToken,threads/id'
+      fields: 'nextPageToken,threads/id,resultSizeEstimate'
     });
 
     const ids = (listResp.data.threads || []).map(t => t.id);
@@ -271,7 +341,8 @@ router.get('/threads/sent', requireAuth, async (req, res) => {
 
     res.json({
       nextPageToken: listResp.data.nextPageToken || null,
-      threads: details.filter(Boolean)
+      threads: details.filter(Boolean),
+      total: typeof listResp.data.resultSizeEstimate === 'number' ? listResp.data.resultSizeEstimate : undefined
     });
   } catch (err) {
     console.error(err);

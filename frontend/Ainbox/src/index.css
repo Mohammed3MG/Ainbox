@@ -162,3 +162,75 @@
     .spark--1,.spark--2,.spark--3{ animation: none; opacity:1; transform:none; }
   }
 
+  /* Email content styling */
+  .email-content {
+    @apply text-gray-900;
+  }
+
+  .email-content h1,
+  .email-content h2,
+  .email-content h3,
+  .email-content h4,
+  .email-content h5,
+  .email-content h6 {
+    @apply font-semibold mb-2 mt-4;
+  }
+
+  .email-content h1 { @apply text-xl; }
+  .email-content h2 { @apply text-lg; }
+  .email-content h3 { @apply text-base; }
+
+  .email-content p {
+    @apply mb-3;
+  }
+
+  .email-content a {
+    @apply text-blue-600 hover:text-blue-800 underline;
+  }
+
+  .email-content ul,
+  .email-content ol {
+    @apply ml-6 mb-3;
+  }
+
+  .email-content li {
+    @apply mb-1;
+  }
+
+  .email-content ul li {
+    @apply list-disc;
+  }
+
+  .email-content ol li {
+    @apply list-decimal;
+  }
+
+  .email-content blockquote {
+    @apply border-l-4 border-gray-300 pl-4 italic text-gray-700 my-3;
+  }
+
+  .email-content pre {
+    @apply bg-gray-100 p-3 rounded text-sm overflow-x-auto mb-3;
+  }
+
+  .email-content code {
+    @apply bg-gray-100 px-1 py-0.5 rounded text-sm;
+  }
+
+  .email-content table {
+    @apply border-collapse w-full mb-3;
+  }
+
+  .email-content th,
+  .email-content td {
+    @apply border border-gray-300 px-2 py-1 text-left;
+  }
+
+  .email-content th {
+    @apply bg-gray-100 font-medium;
+  }
+
+  .email-content img {
+    @apply max-w-full h-auto rounded;
+  }
+

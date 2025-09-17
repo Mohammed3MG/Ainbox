@@ -68,3 +68,39 @@ router.post('/terms/accept', requireAuth, async (req, res) => {
 });
 
 module.exports = router;
+
+// --- Real-time updates (SSE) and uploads (stubs) ---
+// Keep this at the end to avoid interfering with above exports
+
+// Server-Sent Events: basic stream with keep-alives
+router.get('/emails/stream', requireAuth, (req, res) => {
+  // SSE headers
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  // Initial ping
+  res.write(': connected\n\n');
+
+  const interval = setInterval(() => {
+    // Send keepalive ping
+    res.write(`event: ping\n`);
+    res.write(`data: {}\n\n`);
+  }, 25000);
+
+  req.on('close', () => {
+    clearInterval(interval);
+  });
+});
+
+// Attachment upload stub: returns a placeholder without parsing multipart
+router.post('/emails/upload-attachment', requireAuth, (req, res) => {
+  // In a future iteration, switch to multer to process files.
+  const fileMeta = {
+    id: String(Date.now()),
+    name: 'attachment',
+    size: 0,
+    type: 'application/octet-stream',
+    url: null,
+  };
+  return res.json(envelope({ data: fileMeta }));
+});

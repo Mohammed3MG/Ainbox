@@ -4,8 +4,8 @@ const { ensureMsAccessToken } = require('../utils/outlookClient');
 
 const router = express.Router();
 
-async function httpGet(url, accessToken) {
-  const headers = { Authorization: `Bearer ${accessToken}` };
+async function httpGet(url, accessToken, extraHeaders = {}) {
+  const headers = { Authorization: `Bearer ${accessToken}`, ...extraHeaders };
   if (typeof fetch === 'function') return fetch(url, { headers });
   const fetch2 = (await import('node-fetch')).default;
   return fetch2(url, { headers });
@@ -17,6 +17,17 @@ async function httpPostJson(url, accessToken, body) {
     'Content-Type': 'application/json'
   };
   const opts = { method: 'POST', headers, body: JSON.stringify(body) };
+  if (typeof fetch === 'function') return fetch(url, opts);
+  const fetch2 = (await import('node-fetch')).default;
+  return fetch2(url, opts);
+}
+
+async function httpPatchJson(url, accessToken, body) {
+  const headers = {
+    Authorization: `Bearer ${accessToken}`,
+    'Content-Type': 'application/json'
+  };
+  const opts = { method: 'PATCH', headers, body: JSON.stringify(body) };
   if (typeof fetch === 'function') return fetch(url, opts);
   const fetch2 = (await import('node-fetch')).default;
   return fetch2(url, opts);
@@ -68,13 +79,16 @@ async function listMessages(req, res) {
     params.set('$orderby', folder === 'sentitems' ? 'sentDateTime desc' : 'receivedDateTime desc');
     const select = ['id','conversationId','subject','from','toRecipients','receivedDateTime','sentDateTime','createdDateTime','isRead','bodyPreview','hasAttachments','importance'];
     params.set('$select', select.join(','));
+    // ask Graph for total count of the current query
+    params.set('$count', 'true');
     const filters = [];
     if (unread) filters.push('isRead eq false');
     if (filters.length) params.set('$filter', filters.join(' and '));
     let url = `${base}?${params.toString()}`;
     if (skiptoken) url += `&$skiptoken=${encodeURIComponent(skiptoken)}`;
 
-    const resp = await httpGet(url, token);
+    // $count requires this header
+    const resp = await httpGet(url, token, { 'ConsistencyLevel': 'eventual' });
     const json = await readJsonSafe(resp);
     if (!resp.ok) {
       const payload = {
@@ -94,7 +108,8 @@ async function listMessages(req, res) {
       const u = new URL(nextLink);
       nextSkip = u.searchParams.get('$skiptoken');
     }
-    return res.json({ folder, unreadOnly: unread, nextSkipToken: nextSkip, messages: items });
+    const total = typeof json['@odata.count'] === 'number' ? json['@odata.count'] : undefined;
+    return res.json({ folder, unreadOnly: unread, nextSkipToken: nextSkip, messages: items, total });
   } catch (e) {
     console.error(e);
     return res.status(401).json({ error: 'Unable to access Outlook', reason: e?.message, source: 'listMessages' });
@@ -117,6 +132,81 @@ router.get('/outlook/sent', requireAuth, async (req, res) => {
 router.get('/outlook/drafts', requireAuth, async (req, res) => {
   req.query.folder = 'drafts';
   return listMessages(req, res);
+});
+
+// Inbox stats: total + unread counts via Graph
+router.get('/outlook/inbox-stats', requireAuth, async (req, res) => {
+  try {
+    const token = await ensureMsAccessToken(req, res);
+    const url = 'https://graph.microsoft.com/v1.0/me/mailFolders/Inbox?$select=totalItemCount,unreadItemCount';
+    const resp = await httpGet(url, token);
+    const json = await readJsonSafe(resp);
+    if (!resp.ok) {
+      return res.status(401).json({ error: json.error?.message || json._raw || `HTTP ${resp.status}` });
+    }
+    return res.json({ total: json.totalItemCount || 0, unread: json.unreadItemCount || 0 });
+  } catch (e) {
+    console.error(e);
+    return res.status(401).json({ error: 'Unable to access Outlook inbox stats' });
+  }
+});
+
+// Mark Outlook conversations read/unread
+async function listConversationMessageIds(token, conversationId) {
+  const ids = [];
+  let url = `https://graph.microsoft.com/v1.0/me/messages?$select=id,conversationId,isRead&$filter=conversationId eq '${conversationId}'&$top=50`;
+  while (url) {
+    const resp = await httpGet(url, token);
+    const json = await resp.json();
+    if (!resp.ok) break;
+    for (const m of json.value || []) ids.push(m.id);
+    url = json['@odata.nextLink'] || null;
+  }
+  return ids;
+}
+
+router.post('/outlook/mark-read', requireAuth, async (req, res) => {
+  try {
+    const ids = Array.isArray(req.body?.ids) ? req.body.ids : [];
+    if (!ids.length) return res.status(400).json({ error: 'ids required' });
+    const token = await ensureMsAccessToken(req, res);
+    let ok = 0;
+    for (const convId of ids) {
+      try {
+        const msgIds = await listConversationMessageIds(token, convId);
+        for (const mid of msgIds) {
+          await httpPatchJson(`https://graph.microsoft.com/v1.0/me/messages/${mid}`, token, { isRead: true });
+        }
+        ok += 1;
+      } catch (_) {}
+    }
+    return res.json({ ok, total: ids.length });
+  } catch (e) {
+    console.error('outlook/mark-read failed:', e);
+    return res.status(401).json({ error: 'Unable to mark Outlook conversations as read' });
+  }
+});
+
+router.post('/outlook/mark-unread', requireAuth, async (req, res) => {
+  try {
+    const ids = Array.isArray(req.body?.ids) ? req.body.ids : [];
+    if (!ids.length) return res.status(400).json({ error: 'ids required' });
+    const token = await ensureMsAccessToken(req, res);
+    let ok = 0;
+    for (const convId of ids) {
+      try {
+        const msgIds = await listConversationMessageIds(token, convId);
+        for (const mid of msgIds) {
+          await httpPatchJson(`https://graph.microsoft.com/v1.0/me/messages/${mid}`, token, { isRead: false });
+        }
+        ok += 1;
+      } catch (_) {}
+    }
+    return res.json({ ok, total: ids.length });
+  } catch (e) {
+    console.error('outlook/mark-unread failed:', e);
+    return res.status(401).json({ error: 'Unable to mark Outlook conversations as unread' });
+  }
 });
 
 // Thread (conversation) details

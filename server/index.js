@@ -47,17 +47,32 @@ app.use(otherRouter);
 app.use('/api/v1', apiV1);
 
 
+// Health endpoints
+app.get('/healthz', (req, res) => res.status(200).send('ok'));
+app.get('/readyz', (req, res) => res.status(200).send('ready'));
+
 // Public home
 app.get('/', redirectIfAuthenticated, (req, res) => {
   res.send('<div style="display:flex;gap:12px;"><a href="/google">Login with Google</a><a href="/auth/outlook">Login with Outlook</a><a href="/auth/yahoo">Login with Yahoo</a><a href="/other">Other (IMAP/SMTP or Exchange)</a></div>');
 });
 
 
-// SSL options from .env
-const sslOptions = {
-  key: fs.readFileSync(process.env.SSL_KEY),
-  cert: fs.readFileSync(process.env.SSL_CERT),
-};
+// SSL options from .env (optional for dev)
+let sslOptions = null;
+try {
+  const keyPath = process.env.SSL_KEY;
+  const certPath = process.env.SSL_CERT;
+  if (keyPath && certPath && fs.existsSync(keyPath) && fs.existsSync(certPath)) {
+    sslOptions = {
+      key: fs.readFileSync(keyPath),
+      cert: fs.readFileSync(certPath),
+    };
+  } else {
+    console.warn('HTTPS disabled: SSL_KEY/SSL_CERT not configured or files missing.');
+  }
+} catch (e) {
+  console.warn('HTTPS disabled: failed to read SSL key/cert:', e?.message);
+}
 
 
 // app.listen(3000, () => {
@@ -77,7 +92,9 @@ const sslOptions = {
     console.log(`✅ HTTP server running at http://localhost:${process.env.HTTP_PORT || 3000}`);
   });
 
-  https.createServer(sslOptions, app).listen(process.env.HTTPS_PORT || 3443, () => {
-    console.log(`🔒 HTTPS server running at https://localhost:${process.env.HTTPS_PORT || 3443}`);
-  });
+  if (sslOptions) {
+    https.createServer(sslOptions, app).listen(process.env.HTTPS_PORT || 3443, () => {
+      console.log(`🔒 HTTPS server running at https://localhost:${process.env.HTTPS_PORT || 3443}`);
+    });
+  }
 })();
