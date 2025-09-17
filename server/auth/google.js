@@ -41,7 +41,13 @@ const router = express.Router();
 
 router.get('/google',
   passport.authenticate('google', {
-    scope: ['profile', 'email', 'https://www.googleapis.com/auth/gmail.readonly', 'https://www.googleapis.com/auth/gmail.send'],
+    scope: [
+      'profile',
+      'email',
+      'https://www.googleapis.com/auth/gmail.readonly',
+      'https://www.googleapis.com/auth/gmail.send',
+      'https://www.googleapis.com/auth/gmail.modify'
+    ],
     accessType: 'offline',
     prompt: 'consent',
   })
@@ -95,7 +101,7 @@ router.get('/google/callback',
                refresh_token_encrypted = COALESCE(EXCLUDED.refresh_token_encrypted, accounts.refresh_token_encrypted),
                scopes = COALESCE(EXCLUDED.scopes, accounts.scopes),
                updated_at = NOW()`,
-            [uuidv4(), user.id, 'google', user.google_id, user.email, enc, 'gmail.readonly gmail.send openid profile email']
+            [uuidv4(), user.id, 'google', user.google_id, user.email, enc, 'gmail.readonly gmail.send gmail.modify openid profile email']
           );
         } catch (e) {
           console.error('Failed to persist Google refresh token:', e.message);
