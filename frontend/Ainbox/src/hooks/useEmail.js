@@ -283,6 +283,10 @@ export function useEmail() {
           setTotal(prev => prev + 1)
           if (!update.email?.isRead) setUnreadCount(prev => prev + 1)
           break
+        case 'unread_count_updated':
+          if (typeof update.unread === 'number') setUnreadCount(update.unread)
+          if (typeof update.total === 'number') setTotal(update.total)
+          break
         case 'email_updated':
           setEmails(prev => prev.map(email =>
             email.id === update.email.id

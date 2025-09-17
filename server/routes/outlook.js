@@ -3,6 +3,8 @@ const { requireAuth } = require('../middleware/auth');
 const { ensureMsAccessToken } = require('../utils/outlookClient');
 
 const router = express.Router();
+const cache = require('../lib/cache');
+const { broadcastToUser } = require('../lib/sse');
 
 async function httpGet(url, accessToken, extraHeaders = {}) {
   const headers = { Authorization: `Bearer ${accessToken}`, ...extraHeaders };
@@ -137,14 +139,21 @@ router.get('/outlook/drafts', requireAuth, async (req, res) => {
 // Inbox stats: total + unread counts via Graph
 router.get('/outlook/inbox-stats', requireAuth, async (req, res) => {
   try {
-    const token = await ensureMsAccessToken(req, res);
-    const url = 'https://graph.microsoft.com/v1.0/me/mailFolders/Inbox?$select=totalItemCount,unreadItemCount';
-    const resp = await httpGet(url, token);
-    const json = await readJsonSafe(resp);
-    if (!resp.ok) {
-      return res.status(401).json({ error: json.error?.message || json._raw || `HTTP ${resp.status}` });
-    }
-    return res.json({ total: json.totalItemCount || 0, unread: json.unreadItemCount || 0 });
+    const userId = String(req.auth?.sub);
+    const key = `inbox:stats:outlook:${userId}`;
+    const value = await cache.wrap(key, 45_000, async () => {
+      const token = await ensureMsAccessToken(req, res);
+      const url = 'https://graph.microsoft.com/v1.0/me/mailFolders/Inbox?$select=totalItemCount,unreadItemCount';
+      const resp = await httpGet(url, token);
+      const json = await readJsonSafe(resp);
+      if (!resp.ok) {
+        const err = new Error(json.error?.message || json._raw || `HTTP ${resp.status}`);
+        err.status = resp.status;
+        throw err;
+      }
+      return { total: json.totalItemCount || 0, unread: json.unreadItemCount || 0 };
+    });
+    return res.json(value);
   } catch (e) {
     console.error(e);
     return res.status(401).json({ error: 'Unable to access Outlook inbox stats' });
@@ -180,6 +189,17 @@ router.post('/outlook/mark-read', requireAuth, async (req, res) => {
         ok += 1;
       } catch (_) {}
     }
+    try {
+      const userId = String(req.auth?.sub);
+      cache.del(`inbox:stats:outlook:${userId}`);
+      const token2 = await ensureMsAccessToken(req, res);
+      const url = 'https://graph.microsoft.com/v1.0/me/mailFolders/Inbox?$select=totalItemCount,unreadItemCount';
+      const resp2 = await httpGet(url, token2);
+      const json2 = await resp2.json();
+      if (resp2.ok) {
+        broadcastToUser(userId, { type: 'unread_count_updated', unread: json2.unreadItemCount || 0, total: json2.totalItemCount || 0 });
+      }
+    } catch (_) {}
     return res.json({ ok, total: ids.length });
   } catch (e) {
     console.error('outlook/mark-read failed:', e);
@@ -202,6 +222,17 @@ router.post('/outlook/mark-unread', requireAuth, async (req, res) => {
         ok += 1;
       } catch (_) {}
     }
+    try {
+      const userId = String(req.auth?.sub);
+      cache.del(`inbox:stats:outlook:${userId}`);
+      const token2 = await ensureMsAccessToken(req, res);
+      const url = 'https://graph.microsoft.com/v1.0/me/mailFolders/Inbox?$select=totalItemCount,unreadItemCount';
+      const resp2 = await httpGet(url, token2);
+      const json2 = await resp2.json();
+      if (resp2.ok) {
+        broadcastToUser(userId, { type: 'unread_count_updated', unread: json2.unreadItemCount || 0, total: json2.totalItemCount || 0 });
+      }
+    } catch (_) {}
     return res.json({ ok, total: ids.length });
   } catch (e) {
     console.error('outlook/mark-unread failed:', e);

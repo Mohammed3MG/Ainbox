@@ -1,6 +1,8 @@
 const express = require('express');
 const { requireAuth } = require('../middleware/auth');
 const { query } = require('../lib/db');
+const { addClient, removeClient } = require('../lib/sse');
+const cache = require('../lib/cache');
 
 const router = express.Router();
 
@@ -78,17 +80,20 @@ router.get('/emails/stream', requireAuth, (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
-  // Initial ping
-  res.write(': connected\n\n');
+  res.flushHeaders?.();
 
-  const interval = setInterval(() => {
-    // Send keepalive ping
-    res.write(`event: ping\n`);
-    res.write(`data: {}\n\n`);
+  const userId = req.auth?.sub;
+  addClient(userId, res);
+  // Send a connected event
+  res.write(`data: ${JSON.stringify({ type: 'connected', ts: Date.now() })}\n\n`);
+
+  const ping = setInterval(() => {
+    try { res.write(': ping\n\n'); } catch (_) {}
   }, 25000);
 
   req.on('close', () => {
-    clearInterval(interval);
+    clearInterval(ping);
+    removeClient(userId, res);
   });
 });
 

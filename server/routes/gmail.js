@@ -2,6 +2,8 @@ const express = require('express');
 const { google } = require('googleapis');
 const { requireAuth } = require('../middleware/auth');
 const { getGoogleOAuthClientFromCookies } = require('../utils/googleClient');
+const cache = require('../lib/cache');
+const { broadcastToUser } = require('../lib/sse');
 
 const router = express.Router();
 
@@ -152,14 +154,18 @@ router.get('/emails', requireAuth, async (req, res) => {
 // Inbox stats: total + unread counts via label
 router.get('/gmail/inbox-stats', requireAuth, async (req, res) => {
   try {
-    const oauth2Client = await getGoogleOAuthClientFromCookies(req);
-    const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
-    const label = await gmail.users.labels.get({ userId: 'me', id: 'INBOX' });
-    const data = label.data || {};
-    // Prefer thread-based counts so unread decreases by 1 per conversation read
-    const threadsTotal = Number.isFinite(data.threadsTotal) ? data.threadsTotal : data.messagesTotal || 0;
-    const threadsUnread = Number.isFinite(data.threadsUnread) ? data.threadsUnread : data.messagesUnread || 0;
-    return res.json({ total: threadsTotal, unread: threadsUnread });
+    const userId = String(req.auth?.sub);
+    const key = `inbox:stats:gmail:${userId}`;
+    const value = await cache.wrap(key, 45_000, async () => {
+      const oauth2Client = await getGoogleOAuthClientFromCookies(req);
+      const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
+      const label = await gmail.users.labels.get({ userId: 'me', id: 'INBOX' });
+      const data = label.data || {};
+      const threadsTotal = Number.isFinite(data.threadsTotal) ? data.threadsTotal : data.messagesTotal || 0;
+      const threadsUnread = Number.isFinite(data.threadsUnread) ? data.threadsUnread : data.messagesUnread || 0;
+      return { total: threadsTotal, unread: threadsUnread };
+    });
+    return res.json(value);
   } catch (err) {
     console.error(err);
     return res.status(401).json({ error: 'Unable to access Gmail. Reconnect Google.' });
@@ -185,6 +191,18 @@ router.post('/gmail/mark-read', requireAuth, async (req, res) => {
         ok += 1;
       } catch (_) {}
     }
+    // Invalidate cache, broadcast updated counts
+    try {
+      const userId = String(req.auth?.sub);
+      cache.del(`inbox:stats:gmail:${userId}`);
+      const oauth2Client2 = await getGoogleOAuthClientFromCookies(req);
+      const gmail2 = google.gmail({ version: 'v1', auth: oauth2Client2 });
+      const label = await gmail2.users.labels.get({ userId: 'me', id: 'INBOX' });
+      const d = label.data || {};
+      const threadsTotal = Number.isFinite(d.threadsTotal) ? d.threadsTotal : d.messagesTotal || 0;
+      const threadsUnread = Number.isFinite(d.threadsUnread) ? d.threadsUnread : d.messagesUnread || 0;
+      broadcastToUser(userId, { type: 'unread_count_updated', unread: threadsUnread, total: threadsTotal });
+    } catch (_) {}
     return res.json({ ok, total: ids.length });
   } catch (e) {
     console.error('gmail/mark-read failed:', e);
@@ -209,6 +227,17 @@ router.post('/gmail/mark-unread', requireAuth, async (req, res) => {
         ok += 1;
       } catch (_) {}
     }
+    try {
+      const userId = String(req.auth?.sub);
+      cache.del(`inbox:stats:gmail:${userId}`);
+      const oauth2Client2 = await getGoogleOAuthClientFromCookies(req);
+      const gmail2 = google.gmail({ version: 'v1', auth: oauth2Client2 });
+      const label = await gmail2.users.labels.get({ userId: 'me', id: 'INBOX' });
+      const d = label.data || {};
+      const threadsTotal = Number.isFinite(d.threadsTotal) ? d.threadsTotal : d.messagesTotal || 0;
+      const threadsUnread = Number.isFinite(d.threadsUnread) ? d.threadsUnread : d.messagesUnread || 0;
+      broadcastToUser(String(req.auth?.sub), { type: 'unread_count_updated', unread: threadsUnread, total: threadsTotal });
+    } catch (_) {}
     return res.json({ ok, total: ids.length });
   } catch (e) {
     console.error('gmail/mark-unread failed:', e);
