@@ -263,8 +263,8 @@ export default function EmailList({
                   )}>
                     {email.from}
                   </span>
-                  {email.labels.map((label) => (
-                    <Badge key={label} variant={getLabelVariant(label)} className="text-xs">
+                  {email.labels.map((label, index) => (
+                    <Badge key={`${email.id}-${label}-${index}`} variant={getLabelVariant(label)} className="text-xs">
                       {label}
                     </Badge>
                   ))}

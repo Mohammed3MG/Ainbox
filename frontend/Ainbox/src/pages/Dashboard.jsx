@@ -70,9 +70,14 @@ export default function Dashboard() {
   const handleEmailSelect = (emailId) => {
     // Optimistically mark as read when opening an email
     const selected = emails.find(e => e.id === emailId)
+    console.log('Email selected:', emailId, 'Current isRead:', selected?.isRead)
+
     if (selected && !selected.isRead) {
+      console.log('Marking email as read:', emailId)
       // Fire-and-forget; hook updates local state + unread counter
-      try { performEmailAction('read', [emailId]) } catch (_) { /* ignore */ }
+      performEmailAction('read', [emailId]).catch(error => {
+        console.error('Failed to mark email as read:', error)
+      })
     }
 
     setSelectedEmailId(emailId)

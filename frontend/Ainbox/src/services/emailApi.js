@@ -88,8 +88,8 @@ export async function getEmails(folder = 'inbox', cursor = null, limit = 50, sea
       switch (folder) {
         case 'inbox':
           endpoint = '/threads'
-          // Filter for primary emails only (exclude promotions, social, updates)
-          params.set('q', 'category:primary')
+          // Note: Primary filter not supported by backend yet
+          // params.set('q', 'category:primary')
           break
         case 'starred':
           endpoint = '/threads'
@@ -425,18 +425,16 @@ export async function getEmailThread(threadId) {
   }
 }
 
-// Inbox stats (total + unread) - for primary emails only
+// Inbox stats (total + unread)
 export async function getInboxStats() {
   try {
     const provider = await getCurrentProvider()
     if (provider === 'gmail') {
-      // Get stats for primary emails only
-      const res = await apiFetch('/threads/stats?q=category:primary')
+      const res = await apiFetch('/gmail/inbox-stats')
       return { total: res.total || 0, unread: res.unread || 0 }
     }
     if (provider === 'outlook') {
-      // Get stats for focused inbox (primary emails)
-      const res = await apiFetch("/outlook/inbox-stats?filter=" + encodeURIComponent("inferenceClassification eq 'focused'"))
+      const res = await apiFetch('/outlook/inbox-stats')
       return { total: res.total || 0, unread: res.unread || 0 }
     }
     return { total: 0, unread: 0 }
@@ -457,63 +455,22 @@ export async function getEmailById(emailId) {
 export async function markEmailAsRead(emailIds) {
   const ids = Array.isArray(emailIds) ? emailIds : [emailIds]
   const provider = await getCurrentProvider()
-
-  console.log(`Marking emails as read:`, ids, `Provider:`, provider)
-
-  try {
-    if (provider === 'gmail') {
-      // Use Gmail API to mark emails as read
-      const response = await apiFetch('/threads/read', {
-        method: 'POST',
-        body: { threadIds: ids }
-      })
-      console.log('Gmail mark-read response:', response)
-      return response
-    } else if (provider === 'outlook') {
-      // Use Outlook API to mark emails as read
-      const response = await apiFetch('/outlook/read', {
-        method: 'POST',
-        body: { messageIds: ids }
-      })
-      console.log('Outlook mark-read response:', response)
-      return response
-    }
-  } catch (error) {
-    console.error('Failed to mark emails as read on provider:', error)
-    // Still return success for local UI updates even if provider sync fails
-    console.warn('Provider sync failed, but continuing with local updates')
+  if (provider === 'gmail') {
+    return apiFetch('/gmail/mark-read', { method: 'POST', body: { ids } })
+  } else if (provider === 'outlook') {
+    return apiFetch('/outlook/mark-read', { method: 'POST', body: { ids } })
   }
-
   return { success: true }
 }
 
 export async function markEmailAsUnread(emailIds) {
   const ids = Array.isArray(emailIds) ? emailIds : [emailIds]
   const provider = await getCurrentProvider()
-
-  try {
-    if (provider === 'gmail') {
-      // Use Gmail API to mark emails as unread
-      const response = await apiFetch('/threads/unread', {
-        method: 'POST',
-        body: { threadIds: ids }
-      })
-      console.log('Gmail mark-unread response:', response)
-      return response
-    } else if (provider === 'outlook') {
-      // Use Outlook API to mark emails as unread
-      const response = await apiFetch('/outlook/unread', {
-        method: 'POST',
-        body: { messageIds: ids }
-      })
-      console.log('Outlook mark-unread response:', response)
-      return response
-    }
-  } catch (error) {
-    console.error('Failed to mark emails as unread:', error)
-    throw error
+  if (provider === 'gmail') {
+    return apiFetch('/gmail/mark-unread', { method: 'POST', body: { ids } })
+  } else if (provider === 'outlook') {
+    return apiFetch('/outlook/mark-unread', { method: 'POST', body: { ids } })
   }
-
   return { success: true }
 }
 

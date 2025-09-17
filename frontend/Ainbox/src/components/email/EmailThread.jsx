@@ -324,8 +324,8 @@ export default function EmailThread({
                           <span className="font-medium text-gray-900">
                             {message.from}
                           </span>
-                          {message.labels.map((label) => (
-                            <Badge key={label} variant={label} className="text-xs">
+                          {message.labels.map((label, index) => (
+                            <Badge key={`${message.id}-${label}-${index}`} variant={label} className="text-xs">
                               {label}
                             </Badge>
                           ))}

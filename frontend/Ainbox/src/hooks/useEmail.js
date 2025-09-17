@@ -188,79 +188,97 @@ export function useEmail() {
   const performEmailAction = useCallback(withErrorHandling(async (action, emailIds) => {
     const ids = Array.isArray(emailIds) ? emailIds : [emailIds]
 
+    console.log('performEmailAction called:', action, ids)
+
+    // Update local state optimistically FIRST
+    let unreadDelta = 0
+    setEmails(prev => prev.map(email => {
+      if (ids.includes(email.id)) {
+        switch (action) {
+          case 'read':
+            console.log('Updating email to read:', email.id)
+            if (!email.isRead) unreadDelta -= 1
+            return { ...email, isRead: true }
+          case 'unread':
+            if (email.isRead) unreadDelta += 1
+            return { ...email, isRead: false }
+          case 'star':
+            return { ...email, isStarred: true }
+          case 'unstar':
+            return { ...email, isStarred: false }
+          case 'archive':
+          case 'delete':
+            if (!email.isRead) unreadDelta -= 1
+            return null // Will be filtered out
+          default:
+            return email
+        }
+      }
+      return email
+    }).filter(Boolean))
+
+    // Adjust unread counter locally first
+    setUnreadCount((prev) => Math.max(0, prev + unreadDelta))
+    console.log('Unread delta:', unreadDelta)
+
+    // Clear selection after bulk actions
+    if (ids.length > 1 || selectedEmails.has(ids[0])) {
+      setSelectedEmails(prev => {
+        const newSet = new Set(prev)
+        ids.forEach(id => newSet.delete(id))
+        return newSet
+      })
+    }
+
+    // Then try to sync with backend (don't wait for it)
     try {
       switch (action) {
         case 'read':
-          await markEmailAsRead(ids)
+          markEmailAsRead(ids).catch(error => {
+            console.error('Backend sync failed for read:', error)
+          })
           break
         case 'unread':
-          await markEmailAsUnread(ids)
+          markEmailAsUnread(ids).catch(error => {
+            console.error('Backend sync failed for unread:', error)
+          })
           break
         case 'star':
-          await starEmail(ids)
+          starEmail(ids).catch(error => {
+            console.error('Backend sync failed for star:', error)
+          })
           break
         case 'unstar':
-          await unstarEmail(ids)
+          unstarEmail(ids).catch(error => {
+            console.error('Backend sync failed for unstar:', error)
+          })
           break
         case 'archive':
-          await archiveEmails(ids)
+          archiveEmails(ids).catch(error => {
+            console.error('Backend sync failed for archive:', error)
+          })
           break
         case 'delete':
-          await deleteEmails(ids)
+          deleteEmails(ids).catch(error => {
+            console.error('Backend sync failed for delete:', error)
+          })
           break
         default:
           throw new Error(`Unknown action: ${action}`)
       }
+    } catch (error) {
+      console.error('Email action error:', error)
+    }
 
-      // Update local state optimistically
-      let unreadDelta = 0
-      setEmails(prev => prev.map(email => {
-        if (ids.includes(email.id)) {
-          switch (action) {
-            case 'read':
-              if (!email.isRead) unreadDelta -= 1
-              return { ...email, isRead: true }
-            case 'unread':
-              if (email.isRead) unreadDelta += 1
-              return { ...email, isRead: false }
-            case 'star':
-              return { ...email, isStarred: true }
-            case 'unstar':
-              return { ...email, isStarred: false }
-            case 'archive':
-            case 'delete':
-              if (!email.isRead) unreadDelta -= 1
-              return null // Will be filtered out
-            default:
-              return email
-          }
-        }
-        return email
-      }).filter(Boolean))
-
-      // Adjust unread counter locally first
-      setUnreadCount((prev) => Math.max(0, prev + unreadDelta))
-
-      // Refresh stats from server for accuracy
+    // Refresh stats from server for accuracy (async)
+    setTimeout(async () => {
       try {
         const stats = await getInboxStats()
         setUnreadCount(stats.unread || 0)
         if (Number.isFinite(stats.total)) setTotal(stats.total)
       } catch (_) { /* ignore */ }
+    }, 100)
 
-      // Clear selection after bulk actions
-      if (ids.length > 1 || selectedEmails.has(ids[0])) {
-        setSelectedEmails(prev => {
-          const newSet = new Set(prev)
-          ids.forEach(id => newSet.delete(id))
-          return newSet
-        })
-      }
-
-    } catch (err) {
-      setError(err.message)
-      throw err
-    }
   }), [selectedEmails])
 
   // Send email
