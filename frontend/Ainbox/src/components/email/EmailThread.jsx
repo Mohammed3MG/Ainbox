@@ -27,6 +27,7 @@ import {
 import { cn } from '../../lib/utils'
 import { generateAvatarProps, hasValidAvatar } from '../../utils/avatarUtils'
 import { processEmailContent, applyEmailStyles } from '../../utils/htmlUtils'
+import { summarizeThread } from '../../services/aiApi'
 
 // Using real thread data from useEmailThread hook
 
@@ -92,6 +93,8 @@ export default function EmailThread({
 }) {
   const { thread, loading, error } = useEmailThread(threadId)
   const [expandedMessages, setExpandedMessages] = useState(new Set())
+  const [summary, setSummary] = useState('')
+  const [summarizing, setSummarizing] = useState(false)
 
   const toggleMessage = (messageId) => {
     const newExpanded = new Set(expandedMessages)
@@ -112,6 +115,20 @@ export default function EmailThread({
   const collapseAll = () => {
     if (thread?.messages && thread.messages.length > 0) {
       setExpandedMessages(new Set([thread.messages[thread.messages.length - 1].id]))
+    }
+  }
+
+  async function handleSummarize() {
+    if (!thread) return
+    try {
+      setSummarizing(true)
+      const minimal = thread.messages.map(m => ({ from: m.from, date: m.date, html: m.html, text: m.text }))
+      const out = await summarizeThread(thread.subject, minimal)
+      setSummary(out || 'No summary produced.')
+    } catch (e) {
+      setSummary('Failed to summarize. Ensure Ollama is running (http://localhost:11434) and try again.')
+    } finally {
+      setSummarizing(false)
     }
   }
 
@@ -214,6 +231,14 @@ export default function EmailThread({
 
           <div className="flex items-center gap-2">
             <Button
+              variant="outline"
+              size="sm"
+              onClick={handleSummarize}
+              disabled={summarizing}
+            >
+              {summarizing ? 'Summarizing…' : 'Summarize'}
+            </Button>
+            <Button
               variant="ghost"
               size="sm"
               onClick={expandAll}
@@ -282,6 +307,13 @@ export default function EmailThread({
           </Button>
         </div>
       </div>
+
+      {summary && (
+        <div className="mx-6 my-2 p-3 bg-yellow-50 border border-yellow-200 rounded">
+          <div className="text-xs uppercase tracking-wide text-yellow-800 mb-1">AI Summary</div>
+          <div className="prose prose-sm" dangerouslySetInnerHTML={{ __html: applyEmailStyles(processEmailContent(summary).safeHtml) }} />
+        </div>
+      )}
 
       {/* Thread messages */}
       <div className="flex-1 overflow-y-auto">

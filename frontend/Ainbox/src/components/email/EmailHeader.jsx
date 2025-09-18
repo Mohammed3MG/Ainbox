@@ -58,9 +58,13 @@ export default function EmailHeader({
               <ChevronLeft className="w-4 h-4" />
             </Button>
           )}
-          <h1 className="text-xl font-semibold text-gray-900">
-            {getFolderTitle(currentFolder)}
-          </h1>
+          
+          <div>
+
+            <h1 className="text-lg font-semibold text-gray-900"> Fyl</h1>
+            <p className="text-sm text-gray-500">AI-Powered Email</p>
+          </div>
+
         </div>
 
         {/* Center - Search */}

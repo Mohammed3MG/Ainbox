@@ -17,6 +17,7 @@ const helmet = require('helmet');
 const cors = require('cors');
 const cookieParser = require('cookie-parser');
 const apiV1 = require('./routes/api_v1');
+const aiRoutes = require('./routes/ai');
 
 const app = express();
 const { runMigrations } = require('./lib/migrate');
@@ -45,6 +46,7 @@ app.use(require('./routes/yahoo'));
 app.use(mailRouter);
 app.use(otherRouter);
 app.use('/api/v1', apiV1);
+app.use(aiRoutes);
 
 
 // Health endpoints

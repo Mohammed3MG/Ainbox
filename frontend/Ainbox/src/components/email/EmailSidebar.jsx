@@ -41,7 +41,7 @@ export default function EmailSidebar({ activeFolder, onFolderChange, onCompose, 
   return (
     <div className="w-50 bg-white border-r border-gray-200 flex flex-col h-screen overflow-hidden">
       {/* Logo */}
-
+ 
 
       {/* Navigation */}
       <div className="flex-shrink-0 p-4 space-y-1">
