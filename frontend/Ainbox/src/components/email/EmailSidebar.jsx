@@ -41,17 +41,7 @@ export default function EmailSidebar({ activeFolder, onFolderChange, onCompose, 
   return (
     <div className="w-50 bg-white border-r border-gray-200 flex flex-col h-screen overflow-hidden">
       {/* Logo */}
-      <div className="flex-shrink-0 p-6 border-b border-gray-200">
-        <div className="flex items-center gap-2">
-          <div className="w-8 h-8 bg-blue-500 rounded-lg flex items-center justify-center">
-            <Star className="w-4 h-4 text-white" />
-          </div>
-          <div>
-            <h1 className="text-lg font-semibold text-gray-900">Fyl</h1>
-            <p className="text-sm text-gray-500">AI-Powered Email</p>
-          </div>
-        </div>
-      </div>
+
 
       {/* Navigation */}
       <div className="flex-shrink-0 p-4 space-y-1">

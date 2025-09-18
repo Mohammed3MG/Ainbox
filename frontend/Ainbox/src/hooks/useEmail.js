@@ -71,14 +71,18 @@ export function useEmail() {
         const knownEnd = (res?.emails?.length || 0)
         return Math.max(apiTotal, knownEnd)
       })
-      // Load stats for current folder
+      // Load stats: always fetch spam count so badge shows immediately
+      // and fetch inbox counts when viewing inbox
+      try {
+        const s = await getSpamStats()
+        setSpamUnreadCount(s.unread || 0)
+      } catch (_) { /* ignore */ }
       if (folder === 'inbox') {
         const stats = await getInboxStats()
         setUnreadCount(stats.unread || 0)
         if (Number.isFinite(stats.total)) setTotal(stats.total)
       } else if (folder === 'spam') {
-        const s = await getSpamStats()
-        setSpamUnreadCount(s.unread || 0)
+        // already fetched spam stats above
       }
     } catch (_) { /* state already set in loadEmails */ }
   }, [loadEmails])

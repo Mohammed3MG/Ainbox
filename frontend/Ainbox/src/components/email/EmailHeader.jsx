@@ -18,6 +18,7 @@ import {
   DropdownMenuTrigger,
 } from '../ui/dropdown-menu'
 import { useSession } from '../../hooks/useSession'
+import { logout } from '../../services/sessionApi'
 
 export default function EmailHeader({
   currentFolder,
@@ -112,7 +113,13 @@ export default function EmailHeader({
                 Settings
               </DropdownMenuItem>
               <DropdownMenuSeparator />
-              <DropdownMenuItem>
+              <DropdownMenuItem
+                className="cursor-pointer"
+                onSelect={async (e) => {
+                  try { await logout() } catch (_) {}
+                  window.location.assign('/')
+                }}
+              >
                 Sign out
               </DropdownMenuItem>
             </DropdownMenuContent>
