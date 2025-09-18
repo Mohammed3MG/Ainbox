@@ -1,4 +1,5 @@
 import React, { useState, useMemo, useEffect } from 'react'
+import { FixedSizeList as VirtualList } from 'react-window'
 import {
   Star,
   Paperclip,
@@ -204,125 +205,131 @@ export default function EmailList({
         </div>
       </div>
 
-      {/* Email list */}
-      <div className="flex-1 overflow-y-auto">
-        <div className="divide-y divide-gray-100">
-          {filteredEmails.map((email) => (
-            <div
-              key={email.id}
-              className={cn(
-                "flex items-center gap-4 p-4 hover:bg-gray-50 cursor-pointer transition-colors",
-                selectedEmailId === email.id && "bg-blue-50 border-r-2 border-blue-500",
-                !email.isRead && "bg-[#f7d794]"
-              )}
-              onClick={() => onEmailSelect(email.id)}
-            >
-              {/* Checkbox */}
-              <input
-                type="checkbox"
-                checked={selectedEmails.has(email.id)}
-                onChange={(e) => {
-                  e.stopPropagation()
-                  handleEmailSelect(email.id)
-                }}
-                className="rounded border-gray-300"
-              />
-
-              {/* Star */}
-              <button
-                onClick={(e) => {
-                  e.stopPropagation()
-                  onEmailAction('star', [email.id])
-                }}
+      {/* Email list (virtualized) */}
+      <div className="flex-1 overflow-hidden">
+        <VirtualList
+          height={typeof window !== 'undefined' ? Math.max(240, window.innerHeight - 240) : 600}
+          itemCount={filteredEmails.length}
+          itemSize={92}
+          width={'100%'}
+          onItemsRendered={({ visibleStartIndex, visibleStopIndex }) => {
+            const threshold = Math.max(0, filteredEmails.length - 12)
+            if (!loading && hasMore && visibleStopIndex >= threshold) {
+              onLoadNext?.()
+            }
+          }}
+        >
+          {({ index, style }) => {
+            const email = filteredEmails[index]
+            return (
+              <div
+                key={email.id}
+                style={style}
                 className={cn(
-                  "p-1 rounded cursor-pointer",
-                  email.isStarred ? "text-yellow-500" : "text-gray-300 hover:text-gray-500"
+                  "flex items-center gap-4 p-4 hover:bg-gray-50 cursor-pointer transition-colors border-b border-gray-100",
+                  selectedEmailId === email.id && "bg-blue-50 border-r-2 border-blue-500",
+                  !email.isRead && "bg-[#f7d794]"
                 )}
+                onClick={() => onEmailSelect(email.id)}
               >
-                <Star className={cn("w-4 h-4", email.isStarred && "fill-current")} />
-              </button>
+                {/* Checkbox */}
+                <input
+                  type="checkbox"
+                  checked={selectedEmails.has(email.id)}
+                  onChange={(e) => {
+                    e.stopPropagation()
+                    handleEmailSelect(email.id)
+                  }}
+                  className="rounded border-gray-300"
+                />
 
-              {/* Avatar */}
-              <Avatar className="w-10 h-10 flex-shrink-0">
-                {hasValidAvatar(email.avatar) && <AvatarImage src={email.avatar} />}
-                <AvatarFallback className={cn(
-                  generateAvatarProps(email.from, email.fromEmail).colorClass,
-                  generateAvatarProps(email.from, email.fromEmail).textColor,
-                  "text-sm font-medium"
-                )}>
-                  {generateAvatarProps(email.from, email.fromEmail).initials}
-                </AvatarFallback>
-              </Avatar>
+                {/* Star */}
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    onEmailAction('star', [email.id])
+                  }}
+                  className={cn(
+                    "p-1 rounded cursor-pointer",
+                    email.isStarred ? "text-yellow-500" : "text-gray-300 hover:text-gray-500"
+                  )}
+                >
+                  <Star className={cn("w-4 h-4", email.isStarred && "fill-current")} />
+                </button>
 
-              {/* Email content */}
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-2 mb-1">
-                  <span className={cn(
-                    "font-medium text-gray-900 truncate",
+                {/* Avatar */}
+                <Avatar className="w-10 h-10 flex-shrink-0">
+                  {hasValidAvatar(email.avatar) && <AvatarImage src={email.avatar} />}
+                  <AvatarFallback className={cn(
+                    generateAvatarProps(email.from, email.fromEmail).colorClass,
+                    generateAvatarProps(email.from, email.fromEmail).textColor,
+                    "text-sm font-medium"
+                  )}>
+                    {generateAvatarProps(email.from, email.fromEmail).initials}
+                  </AvatarFallback>
+                </Avatar>
+
+                {/* Email content */}
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className={cn(
+                      "font-medium text-gray-900 truncate",
+                      !email.isRead && "font-semibold"
+                    )}>
+                      {email.from}
+                    </span>
+                    {email.labels.map((label, idx) => (
+                      <Badge key={`${email.id}-${label}-${idx}`} variant={getLabelVariant(label)} className="text-xs">
+                        {label}
+                      </Badge>
+                    ))}
+                    {email.hasAttachment && (
+                      <Paperclip className="w-3 h-3 text-gray-400" />
+                    )}
+                  </div>
+                  <h3 className={cn(
+                    "text-sm text-gray-900 truncate mb-1",
                     !email.isRead && "font-semibold"
                   )}>
-                    {email.from}
-                  </span>
-                  {email.labels.map((label, index) => (
-                    <Badge key={`${email.id}-${label}-${index}`} variant={getLabelVariant(label)} className="text-xs">
-                      {label}
-                    </Badge>
-                  ))}
-                  {email.hasAttachment && (
-                    <Paperclip className="w-3 h-3 text-gray-400" />
-                  )}
+                    {email.subject}
+                  </h3>
+                  <p className="text-sm text-gray-500 truncate">
+                    {email.preview}
+                  </p>
                 </div>
-                <h3 className={cn(
-                  "text-sm text-gray-900 truncate mb-1",
-                  !email.isRead && "font-semibold"
-                )}>
-                  {email.subject}
-                </h3>
-                <p className="text-sm text-gray-500 truncate">
-                  {email.preview}
-                </p>
+
+                {/* Time and actions */}
+                <div className="flex items-center gap-2 flex-shrink-0">
+                  <span className="text-xs text-gray-500">
+                    {formatTime(email.time)}
+                  </span>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="p-1 opacity-0 group-hover:opacity-100"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <MoreHorizontal className="w-4 h-4" />
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end">
+                      <DropdownMenuItem onClick={() => onEmailAction('archive', [email.id])}>
+                        <Archive className="w-4 h-4 mr-2" />
+                        Archive
+                      </DropdownMenuItem>
+                      <DropdownMenuItem onClick={() => onEmailAction('delete', [email.id])}>
+                        <Trash2 className="w-4 h-4 mr-2" />
+                        Delete
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                </div>
               </div>
-
-              {/* Time and actions */}
-              <div className="flex items-center gap-2 flex-shrink-0">
-                <span className="text-xs text-gray-500">
-                  {formatTime(email.time)}
-                </span>
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="p-1 opacity-0 group-hover:opacity-100"
-                      onClick={(e) => e.stopPropagation()}
-                    >
-                      <MoreHorizontal className="w-4 h-4" />
-                    </Button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end">
-                    <DropdownMenuItem onClick={() => onEmailAction('archive', [email.id])}>
-                      <Archive className="w-4 h-4 mr-2" />
-                      Archive
-                    </DropdownMenuItem>
-                    <DropdownMenuItem onClick={() => onEmailAction('delete', [email.id])}>
-                      <Trash2 className="w-4 h-4 mr-2" />
-                      Delete
-                    </DropdownMenuItem>
-                  </DropdownMenuContent>
-                </DropdownMenu>
-              </div>
-            </div>
-          ))}
-
-          {/* Bottom spacer removed; pagination controls moved to top */}
-
-          {/* Loading indicator for additional emails */}
-          {loading && filteredEmails.length > 0 && !hasMore && (
-            <div className="p-4 text-center">
-              <div className="w-6 h-6 border-2 border-blue-600 border-t-transparent rounded-full animate-spin mx-auto" />
-            </div>
-          )}
-        </div>
+            )
+          }}
+        </VirtualList>
       </div>
     </div>
   )

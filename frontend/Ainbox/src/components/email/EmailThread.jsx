@@ -27,7 +27,7 @@ import {
 import { cn } from '../../lib/utils'
 import { generateAvatarProps, hasValidAvatar } from '../../utils/avatarUtils'
 import { processEmailContent, applyEmailStyles } from '../../utils/htmlUtils'
-import { summarizeThread } from '../../services/aiApi'
+import { summarizeThread, suggestReplies } from '../../services/aiApi'
 
 // Using real thread data from useEmailThread hook
 
@@ -95,6 +95,8 @@ export default function EmailThread({
   const [expandedMessages, setExpandedMessages] = useState(new Set())
   const [summary, setSummary] = useState('')
   const [summarizing, setSummarizing] = useState(false)
+  const [suggestions, setSuggestions] = useState('')
+  const [suggesting, setSuggesting] = useState(false)
 
   const toggleMessage = (messageId) => {
     const newExpanded = new Set(expandedMessages)
@@ -129,6 +131,20 @@ export default function EmailThread({
       setSummary('Failed to summarize. Ensure Ollama is running (http://localhost:11434) and try again.')
     } finally {
       setSummarizing(false)
+    }
+  }
+
+  async function handleSuggestReplies() {
+    if (!thread) return
+    try {
+      setSuggesting(true)
+      const last = thread.messages[thread.messages.length - 1]
+      const out = await suggestReplies(thread.subject, { html: last.html, text: last.text }, { tone: 'neutral' })
+      setSuggestions(out || 'No suggestions produced.')
+    } catch (e) {
+      setSuggestions('Failed to suggest replies. Ensure Ollama is running and try again.')
+    } finally {
+      setSuggesting(false)
     }
   }
 
@@ -239,6 +255,14 @@ export default function EmailThread({
               {summarizing ? 'Summarizing…' : 'Summarize'}
             </Button>
             <Button
+              variant="outline"
+              size="sm"
+              onClick={handleSuggestReplies}
+              disabled={suggesting}
+            >
+              {suggesting ? 'Thinking…' : 'Suggest replies'}
+            </Button>
+            <Button
               variant="ghost"
               size="sm"
               onClick={expandAll}
@@ -312,6 +336,13 @@ export default function EmailThread({
         <div className="mx-6 my-2 p-3 bg-yellow-50 border border-yellow-200 rounded">
           <div className="text-xs uppercase tracking-wide text-yellow-800 mb-1">AI Summary</div>
           <div className="prose prose-sm" dangerouslySetInnerHTML={{ __html: applyEmailStyles(processEmailContent(summary).safeHtml) }} />
+        </div>
+      )}
+
+      {suggestions && (
+        <div className="mx-6 my-2 p-3 bg-blue-50 border border-blue-200 rounded">
+          <div className="text-xs uppercase tracking-wide text-blue-800 mb-1">Suggested Replies</div>
+          <div className="prose prose-sm" dangerouslySetInnerHTML={{ __html: applyEmailStyles(processEmailContent(suggestions).safeHtml) }} />
         </div>
       )}
 

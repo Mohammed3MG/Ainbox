@@ -35,6 +35,34 @@ async function httpPatchJson(url, accessToken, body) {
   return fetch2(url, opts);
 }
 
+async function httpBatch(token, requests) {
+  const url = 'https://graph.microsoft.com/v1.0/$batch';
+  const body = { requests };
+  const headers = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
+  if (typeof fetch === 'function') return fetch(url, { method: 'POST', headers, body: JSON.stringify(body) });
+  const fetch2 = (await import('node-fetch')).default;
+  return fetch2(url, { method: 'POST', headers, body: JSON.stringify(body) });
+}
+
+async function batchPatchMessages(token, messageIds, isRead) {
+  const chunk = (arr, n) => arr.length ? [arr.slice(0, n), ...chunk(arr.slice(n), n)] : [];
+  const batches = chunk(messageIds, 20);
+  for (const group of batches) {
+    const requests = group.map((id, idx) => ({
+      id: String(idx + 1),
+      method: 'PATCH',
+      url: `/me/messages/${id}`,
+      headers: { 'Content-Type': 'application/json' },
+      body: { isRead }
+    }));
+    const resp = await httpBatch(token, requests);
+    if (!resp.ok) {
+      const text = await resp.text().catch(() => '');
+      throw new Error(`Graph $batch failed: ${resp.status} ${text}`);
+    }
+  }
+}
+
 async function readJsonSafe(resp) {
   try {
     return await resp.json();
@@ -207,9 +235,8 @@ router.post('/outlook/mark-read', requireAuth, async (req, res) => {
     for (const convId of ids) {
       try {
         const msgIds = await listConversationMessageIds(token, convId);
-        for (const mid of msgIds) {
-          await httpPatchJson(`https://graph.microsoft.com/v1.0/me/messages/${mid}`, token, { isRead: true });
-        }
+        if (msgIds.length > 1) await batchPatchMessages(token, msgIds, true);
+        else if (msgIds[0]) await httpPatchJson(`https://graph.microsoft.com/v1.0/me/messages/${msgIds[0]}`, token, { isRead: true });
         ok += 1;
       } catch (_) {}
     }
@@ -240,9 +267,8 @@ router.post('/outlook/mark-unread', requireAuth, async (req, res) => {
     for (const convId of ids) {
       try {
         const msgIds = await listConversationMessageIds(token, convId);
-        for (const mid of msgIds) {
-          await httpPatchJson(`https://graph.microsoft.com/v1.0/me/messages/${mid}`, token, { isRead: false });
-        }
+        if (msgIds.length > 1) await batchPatchMessages(token, msgIds, false);
+        else if (msgIds[0]) await httpPatchJson(`https://graph.microsoft.com/v1.0/me/messages/${msgIds[0]}`, token, { isRead: false });
         ok += 1;
       } catch (_) {}
     }
