@@ -95,7 +95,7 @@ router.get('/emails', requireAuth, async (req, res) => {
     const response = await gmail.users.messages.list({
       userId: 'me',
       maxResults: 2,
-      labelIds: ['INBOX']
+      labelIds: ['INBOX', 'CATEGORY_PERSONAL']
     });
 
     const messages = [];
@@ -151,26 +151,34 @@ router.get('/emails', requireAuth, async (req, res) => {
   }
 });
 
-// Inbox stats: total + unread counts via label
-router.get('/gmail/inbox-stats', requireAuth, async (req, res) => {
-  try {
-    const userId = String(req.auth?.sub);
-    const key = `inbox:stats:gmail:${userId}`;
-    const value = await cache.wrap(key, 45_000, async () => {
-      const oauth2Client = await getGoogleOAuthClientFromCookies(req);
-      const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
-      const label = await gmail.users.labels.get({ userId: 'me', id: 'INBOX' });
-      const data = label.data || {};
-      const threadsTotal = Number.isFinite(data.threadsTotal) ? data.threadsTotal : data.messagesTotal || 0;
-      const threadsUnread = Number.isFinite(data.threadsUnread) ? data.threadsUnread : data.messagesUnread || 0;
-      return { total: threadsTotal, unread: threadsUnread };
-    });
-    return res.json(value);
-  } catch (err) {
-    console.error(err);
-    return res.status(401).json({ error: 'Unable to access Gmail. Reconnect Google.' });
-  }
-});
+  // Inbox stats: Primary category (category:primary) within INBOX
+  router.get('/gmail/inbox-stats', requireAuth, async (req, res) => {
+    try {
+      const userId = String(req.auth?.sub);
+      const key = `inbox:stats:gmail:${userId}`;
+      const value = await cache.wrap(key, 45_000, async () => {
+        const oauth2Client = await getGoogleOAuthClientFromCookies(req);
+        const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
+        async function estimate(q) {
+          const resp = await gmail.users.threads.list({
+            userId: 'me',
+            maxResults: 1,
+            labelIds: ['INBOX'],
+            q,
+            fields: 'resultSizeEstimate'
+          });
+          return Number.isFinite(resp.data?.resultSizeEstimate) ? resp.data.resultSizeEstimate : 0;
+        }
+        const total = await estimate('category:primary');
+        const unread = await estimate('category:primary is:unread');
+        return { total, unread };
+      });
+      return res.json(value);
+    } catch (err) {
+      console.error(err);
+      return res.status(401).json({ error: 'Unable to access Gmail. Reconnect Google.' });
+    }
+  });
 
 // Mark Gmail threads read/unread (batch)
 router.post('/gmail/mark-read', requireAuth, async (req, res) => {
@@ -274,8 +282,8 @@ router.get('/threads', requireAuth, async (req, res) => {
     const unread = String(req.query.unread || 'false') === 'true';
     const q = req.query.q || undefined;
 
-    // Include all categories within INBOX (no CATEGORY_* filter)
-    const labelIds = ['INBOX'];
+    // Only show Primary category within INBOX
+    const labelIds = ['INBOX', 'CATEGORY_PERSONAL'];
     if (unread) labelIds.push('UNREAD');
 
     const listResp = await gmail.users.threads.list({
