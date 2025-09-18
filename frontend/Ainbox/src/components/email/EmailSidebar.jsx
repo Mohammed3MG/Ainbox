@@ -6,6 +6,7 @@ import {
   FileText,
   Archive,
   Trash2,
+  ShieldAlert,
   Plus,
   Circle
 } from 'lucide-react'
@@ -21,6 +22,7 @@ const sidebarItems = [
   { id: 'drafts', label: 'Drafts', icon: FileText, count: 0 },
   { id: 'archive', label: 'Archive', icon: Archive, count: 0 },
   { id: 'trash', label: 'Trash', icon: Trash2, count: 0 },
+  { id: 'spam', label: 'Spam', icon: ShieldAlert, count: 0 },
 ]
 
 const labels = [

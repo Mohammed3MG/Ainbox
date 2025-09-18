@@ -88,8 +88,7 @@ export async function getEmails(folder = 'inbox', cursor = null, limit = 50, sea
       switch (folder) {
         case 'inbox':
           endpoint = '/threads'
-          // Note: Primary filter not supported by backend yet
-          // params.set('q', 'category:primary')
+          // Backend enforces Primary for Gmail threads, so no q needed here
           break
         case 'starred':
           endpoint = '/threads'
@@ -110,6 +109,10 @@ export async function getEmails(folder = 'inbox', cursor = null, limit = 50, sea
         case 'trash':
           endpoint = '/threads'
           params.set('q', 'in:trash')
+          break
+        case 'spam':
+          endpoint = '/threads'
+          params.set('q', 'in:spam')
           break
         default:
           endpoint = '/threads'
@@ -154,6 +157,10 @@ export async function getEmails(folder = 'inbox', cursor = null, limit = 50, sea
         case 'trash':
           endpoint = '/outlook/messages'
           params.set('folder', 'deleteditems')
+          break
+        case 'spam':
+          endpoint = '/outlook/messages'
+          params.set('folder', 'junkemail')
           break
         default:
           endpoint = '/outlook/inbox'

@@ -36,7 +36,8 @@ export default function EmailHeader({
       sent: 'Sent',
       drafts: 'Drafts',
       archive: 'Archive',
-      trash: 'Trash'
+      trash: 'Trash',
+      spam: 'Spam'
     }
     return titles[folder] || 'Inbox'
   }
