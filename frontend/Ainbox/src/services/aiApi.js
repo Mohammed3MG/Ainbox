@@ -8,10 +8,16 @@ export async function summarizeThread(subject, messages) {
   return res.summary
 }
 
-export async function suggestReplies(subject, lastMessage, { tone = 'neutral' } = {}) {
+export async function suggestReplies(subject, lastMessage, { tone = 'neutral', fullThread = [], currentUserEmail = '' } = {}) {
   const res = await apiFetch('/ai/suggest-replies', {
     method: 'POST',
-    body: { subject, lastMessage, tone }
+    body: {
+      subject,
+      lastMessage,
+      tone,
+      fullThread,
+      currentUserEmail
+    }
   })
   return res.suggestions
 }

@@ -12,7 +12,14 @@ import {
   Download,
   ChevronDown,
   ChevronUp,
-  ArrowLeft
+  ArrowLeft,
+  Sparkles,
+  Brain,
+  Zap,
+  MessageSquare,
+  Wand2,
+  FileText,
+  Clock
 } from 'lucide-react'
 import { Avatar, AvatarImage, AvatarFallback } from '../ui/avatar'
 import { Button } from '../ui/button'
@@ -28,6 +35,7 @@ import { cn } from '../../lib/utils'
 import { generateAvatarProps, hasValidAvatar } from '../../utils/avatarUtils'
 import { processEmailContent, applyEmailStyles } from '../../utils/htmlUtils'
 import { summarizeThread, suggestReplies } from '../../services/aiApi'
+import AIContentBox from '../ui/AIContentBox'
 
 // Using real thread data from useEmailThread hook
 
@@ -97,6 +105,8 @@ export default function EmailThread({
   const [summarizing, setSummarizing] = useState(false)
   const [suggestions, setSuggestions] = useState('')
   const [suggesting, setSuggesting] = useState(false)
+  const [summaryTime, setSummaryTime] = useState(null)
+  const [suggestionTime, setSuggestionTime] = useState(null)
 
   const toggleMessage = (messageId) => {
     const newExpanded = new Set(expandedMessages)
@@ -124,11 +134,31 @@ export default function EmailThread({
     if (!thread) return
     try {
       setSummarizing(true)
-      const minimal = thread.messages.map(m => ({ from: m.from, date: m.date, html: m.html, text: m.text }))
+      setSummary('')
+      setSummaryTime(null)
+      const startTime = Date.now()
+
+      // Enhanced message data with better content extraction
+      const minimal = thread.messages.map((m, index) => ({
+        from: m.from,
+        date: m.date,
+        html: m.html,
+        text: m.text,
+        messageNumber: index + 1,
+        totalMessages: thread.messages.length
+      }))
+
+      // Debug log to verify all messages are included
+      console.log(`🔍 Summarizing ${minimal.length} messages:`, minimal.map(m => ({ from: m.from, hasContent: !!(m.html || m.text) })))
+
       const out = await summarizeThread(thread.subject, minimal)
+
+      const endTime = Date.now()
+      setSummaryTime(((endTime - startTime) / 1000).toFixed(1))
       setSummary(out || 'No summary produced.')
     } catch (e) {
       setSummary('Failed to summarize. Ensure Ollama is running (http://localhost:11434) and try again.')
+      setSummaryTime(null)
     } finally {
       setSummarizing(false)
     }
@@ -138,11 +168,42 @@ export default function EmailThread({
     if (!thread) return
     try {
       setSuggesting(true)
-      const last = thread.messages[thread.messages.length - 1]
-      const out = await suggestReplies(thread.subject, { html: last.html, text: last.text }, { tone: 'neutral' })
+      setSuggestions('')
+      setSuggestionTime(null)
+      const startTime = Date.now()
+
+      const lastMessage = thread.messages[thread.messages.length - 1]
+
+      // Enhanced context for smart replies
+      const contextData = {
+        subject: thread.subject,
+        lastMessage: {
+          html: lastMessage.html,
+          text: lastMessage.text,
+          from: lastMessage.from
+        },
+        tone: 'neutral',
+        fullThread: thread.messages.map(m => ({
+          from: m.from,
+          html: m.html,
+          text: m.text,
+          date: m.date
+        })),
+        currentUserEmail: 'user@example.com' // You can get this from session context
+      }
+
+      const out = await suggestReplies(contextData.subject, contextData.lastMessage, {
+        tone: contextData.tone,
+        fullThread: contextData.fullThread,
+        currentUserEmail: contextData.currentUserEmail
+      })
+
+      const endTime = Date.now()
+      setSuggestionTime(((endTime - startTime) / 1000).toFixed(1))
       setSuggestions(out || 'No suggestions produced.')
     } catch (e) {
       setSuggestions('Failed to suggest replies. Ensure Ollama is running and try again.')
+      setSuggestionTime(null)
     } finally {
       setSuggesting(false)
     }
@@ -154,6 +215,21 @@ export default function EmailThread({
       setExpandedMessages(new Set([thread.messages[thread.messages.length - 1].id]))
     }
   }, [thread?.messages, expandedMessages.size])
+
+  const handleCopyToClipboard = async (text) => {
+    try {
+      await navigator.clipboard.writeText(text)
+      return true
+    } catch (err) {
+      console.error('Failed to copy:', err)
+      return false
+    }
+  }
+
+  const handleAIFeedback = (type, aiType) => {
+    console.log(`AI Feedback: ${type} for ${aiType}`)
+    // Could send feedback to backend for improving AI responses
+  }
 
   if (loading) {
     return (
@@ -226,56 +302,136 @@ export default function EmailThread({
             variant="ghost"
             size="sm"
             onClick={onBack}
-            className="text-gray-600 hover:text-gray-900"
+            className="group text-gray-600 hover:text-gray-900 hover:bg-gray-50 transition-all duration-200 rounded-lg"
           >
-            <ArrowLeft className="w-4 h-4 mr-2" />
-            Back to emails
+            <ArrowLeft className="w-4 h-4 mr-2 group-hover:translate-x-[-2px] transition-transform duration-200" />
+            <span className="font-medium">Back to emails</span>
           </Button>
         </div>
 
-        <div className="flex items-start justify-between mb-4">
+        <div className="flex items-start justify-between mb-6">
           <div className="flex-1">
-            <h1 className="text-xl font-semibold text-gray-900 mb-2">
-              {thread.subject}
-            </h1>
-            <div className="flex items-center gap-2 text-sm text-gray-500">
-              <span>{thread.messages.length} messages</span>
+            <div className="flex items-center gap-3 mb-3">
+              <h1 className="text-xl font-semibold text-gray-900">{thread.subject}</h1>
+              <div className="flex items-center gap-2">
+                {/* Thread status indicators */}
+                <div className="flex items-center gap-1 px-2 py-1 bg-green-100 text-green-700 rounded-full text-xs font-medium">
+                  <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse" />
+                  Active
+                </div>
+                <Badge variant="secondary" className="text-xs">
+                  <MessageSquare className="w-3 h-3 mr-1" />
+                  {thread.messages.length}
+                </Badge>
+              </div>
+            </div>
+            <div className="flex items-center gap-4 text-sm text-gray-500">
+              <div className="flex items-center gap-1">
+                <Clock className="w-4 h-4" />
+                <span>{thread.messages.length} messages</span>
+              </div>
               <span>•</span>
-              <span>{thread.participants.length} participants</span>
+              <div className="flex items-center gap-2">
+                <div className="flex -space-x-1">
+                  {thread.participants.slice(0, 3).map((participant, idx) => (
+                    <div
+                      key={idx}
+                      className="w-6 h-6 bg-gradient-to-br from-blue-400 to-purple-500 rounded-full border-2 border-white flex items-center justify-center text-xs font-medium text-white"
+                    >
+                      {participant.charAt(0).toUpperCase()}
+                    </div>
+                  ))}
+                  {thread.participants.length > 3 && (
+                    <div className="w-6 h-6 bg-gray-300 rounded-full border-2 border-white flex items-center justify-center text-xs font-medium text-gray-600">
+                      +{thread.participants.length - 3}
+                    </div>
+                  )}
+                </div>
+                <span>{thread.participants.length} participants</span>
+              </div>
             </div>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-3">
+            {/* AI Summarize Button */}
             <Button
               variant="outline"
               size="sm"
               onClick={handleSummarize}
               disabled={summarizing}
+              className={cn(
+                "group relative overflow-hidden transition-all duration-300",
+                "hover:bg-gradient-to-r hover:from-yellow-50 hover:to-orange-50",
+                "hover:border-yellow-300 hover:shadow-md",
+                "disabled:opacity-60 disabled:cursor-not-allowed",
+                summarizing && "bg-yellow-50 border-yellow-200"
+              )}
             >
-              {summarizing ? 'Summarizing…' : 'Summarize'}
+              <div className="flex items-center gap-2">
+                {summarizing ? (
+                  <div className="relative">
+                    <Sparkles className="w-4 h-4 text-yellow-600 animate-spin" />
+                    <div className="absolute inset-0 w-4 h-4 bg-yellow-200 rounded-full animate-ping opacity-20" />
+                  </div>
+                ) : (
+                  <Sparkles className="w-4 h-4 text-yellow-600 group-hover:text-yellow-700 transition-colors" />
+                )}
+                <span className="font-medium">
+                  {summarizing ? `Analyzing ${thread?.messages?.length || 0} messages…` : `AI Summary`}
+                </span>
+              </div>
+              {!summarizing && (
+                <div className="absolute inset-0 bg-gradient-to-r from-yellow-400/0 via-yellow-400/10 to-yellow-400/0 translate-x-[-100%] group-hover:translate-x-[100%] transition-transform duration-700" />
+              )}
             </Button>
+
+            {/* AI Suggest Replies Button */}
             <Button
               variant="outline"
               size="sm"
               onClick={handleSuggestReplies}
               disabled={suggesting}
+              className={cn(
+                "group relative overflow-hidden transition-all duration-300",
+                "hover:bg-gradient-to-r hover:from-blue-50 hover:to-indigo-50",
+                "hover:border-blue-300 hover:shadow-md",
+                "disabled:opacity-60 disabled:cursor-not-allowed",
+                suggesting && "bg-blue-50 border-blue-200"
+              )}
             >
-              {suggesting ? 'Thinking…' : 'Suggest replies'}
+              <div className="flex items-center gap-2">
+                {suggesting ? (
+                  <div className="relative">
+                    <Brain className="w-4 h-4 text-blue-600 animate-pulse" />
+                    <div className="absolute inset-0 w-4 h-4 bg-blue-200 rounded-full animate-ping opacity-20" />
+                  </div>
+                ) : (
+                  <Wand2 className="w-4 h-4 text-blue-600 group-hover:text-blue-700 transition-colors" />
+                )}
+                <span className="font-medium">
+                  {suggesting ? 'Crafting…' : 'Smart Replies'}
+                </span>
+              </div>
+              {!suggesting && (
+                <div className="absolute inset-0 bg-gradient-to-r from-blue-400/0 via-blue-400/10 to-blue-400/0 translate-x-[-100%] group-hover:translate-x-[100%] transition-transform duration-700" />
+              )}
             </Button>
             <Button
               variant="ghost"
               size="sm"
               onClick={expandAll}
-              className="text-blue-600 hover:text-blue-700"
+              className="group text-blue-600 hover:text-blue-700 hover:bg-blue-50 transition-all duration-200"
             >
+              <ChevronDown className="w-4 h-4 mr-1 group-hover:scale-110 transition-transform" />
               Expand all
             </Button>
             <Button
               variant="ghost"
               size="sm"
               onClick={collapseAll}
-              className="text-blue-600 hover:text-blue-700"
+              className="group text-gray-600 hover:text-gray-700 hover:bg-gray-50 transition-all duration-200"
             >
+              <ChevronUp className="w-4 h-4 mr-1 group-hover:scale-110 transition-transform" />
               Collapse all
             </Button>
 
@@ -307,44 +463,60 @@ export default function EmailThread({
         </div>
 
         {/* Quick actions */}
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-3">
           <Button
             onClick={() => onReply(thread.messages[thread.messages.length - 1])}
-            className="bg-blue-600 hover:bg-blue-700 text-white"
+            className="group bg-blue-600 hover:bg-blue-700 text-white shadow-md hover:shadow-lg transition-all duration-200"
           >
-            <Reply className="w-4 h-4 mr-2" />
-            Reply
+            <Reply className="w-4 h-4 mr-2 group-hover:scale-110 transition-transform" />
+            <span className="font-medium">Reply</span>
           </Button>
           <Button
             variant="outline"
             onClick={() => onReplyAll(thread.messages[thread.messages.length - 1])}
+            className="group border-blue-200 text-blue-600 hover:bg-blue-50 hover:border-blue-300 transition-all duration-200"
           >
-            <ReplyAll className="w-4 h-4 mr-2" />
-            Reply All
+            <ReplyAll className="w-4 h-4 mr-2 group-hover:scale-110 transition-transform" />
+            <span className="font-medium">Reply All</span>
           </Button>
           <Button
             variant="outline"
             onClick={() => onForward(thread.messages[thread.messages.length - 1])}
+            className="group border-gray-200 text-gray-600 hover:bg-gray-50 hover:border-gray-300 transition-all duration-200"
           >
-            <Forward className="w-4 h-4 mr-2" />
-            Forward
+            <Forward className="w-4 h-4 mr-2 group-hover:scale-110 transition-transform" />
+            <span className="font-medium">Forward</span>
           </Button>
         </div>
       </div>
 
-      {summary && (
-        <div className="mx-6 my-2 p-3 bg-yellow-50 border border-yellow-200 rounded">
-          <div className="text-xs uppercase tracking-wide text-yellow-800 mb-1">AI Summary</div>
-          <div className="prose prose-sm" dangerouslySetInnerHTML={{ __html: applyEmailStyles(processEmailContent(summary).safeHtml) }} />
-        </div>
-      )}
+      <div className="mx-6 my-2">
+        <AIContentBox
+          title="AI Summary"
+          content={summary}
+          isLoading={summarizing}
+          isError={summary.includes('Failed to summarize')}
+          errorMessage="Failed to connect to AI service"
+          type="summary"
+          generationTime={summaryTime}
+          onCopy={handleCopyToClipboard}
+          onFeedback={(type) => handleAIFeedback(type, 'summary')}
+        />
+      </div>
 
-      {suggestions && (
-        <div className="mx-6 my-2 p-3 bg-blue-50 border border-blue-200 rounded">
-          <div className="text-xs uppercase tracking-wide text-blue-800 mb-1">Suggested Replies</div>
-          <div className="prose prose-sm" dangerouslySetInnerHTML={{ __html: applyEmailStyles(processEmailContent(suggestions).safeHtml) }} />
-        </div>
-      )}
+      <div className="mx-6 my-2">
+        <AIContentBox
+          title="Smart Reply Suggestions"
+          content={suggestions}
+          isLoading={suggesting}
+          isError={suggestions.includes('Failed to suggest')}
+          errorMessage="Failed to generate reply suggestions"
+          type="suggestions"
+          generationTime={suggestionTime}
+          onCopy={handleCopyToClipboard}
+          onFeedback={(type) => handleAIFeedback(type, 'suggestions')}
+        />
+      </div>
 
       {/* Thread messages */}
       <div className="flex-1 overflow-y-auto">

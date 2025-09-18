@@ -1,0 +1,241 @@
+import React, { useState, useEffect } from 'react'
+import {
+  Sparkles,
+  Copy,
+  ThumbsUp,
+  ThumbsDown,
+  Brain,
+  CheckCircle
+} from 'lucide-react'
+import { cn } from '../../lib/utils'
+
+const TypewriterText = ({ text, speed = 30 }) => {
+  const [displayText, setDisplayText] = useState('')
+  const [isComplete, setIsComplete] = useState(false)
+
+  useEffect(() => {
+    if (!text) return
+
+    setDisplayText('')
+    setIsComplete(false)
+    let index = 0
+
+    const timer = setInterval(() => {
+      if (index < text.length) {
+        setDisplayText(text.slice(0, index + 1))
+        index++
+      } else {
+        setIsComplete(true)
+        clearInterval(timer)
+      }
+    }, speed)
+
+    return () => clearInterval(timer)
+  }, [text, speed])
+
+  return (
+    <div className="relative">
+      <div
+        className="prose prose-sm text-gray-700 leading-relaxed"
+        dangerouslySetInnerHTML={{ __html: displayText }}
+      />
+      {!isComplete && (
+        <span className="inline-block w-0.5 h-4 bg-blue-500 animate-pulse ml-0.5" />
+      )}
+    </div>
+  )
+}
+
+const LoadingSkeleton = () => (
+  <div className="animate-pulse">
+    <div className="flex items-center gap-3 mb-4">
+      <div className="w-8 h-8 bg-gray-200 rounded-lg"></div>
+      <div className="space-y-1">
+        <div className="h-4 bg-gray-200 rounded w-20"></div>
+        <div className="h-3 bg-gray-200 rounded w-16"></div>
+      </div>
+    </div>
+    <div className="space-y-2">
+      <div className="h-4 bg-gray-200 rounded w-full"></div>
+      <div className="h-4 bg-gray-200 rounded w-5/6"></div>
+      <div className="h-4 bg-gray-200 rounded w-4/6"></div>
+    </div>
+  </div>
+)
+
+export default function AIContentBox({
+  title = "AI Summary",
+  content = "",
+  isLoading = false,
+  isError = false,
+  errorMessage = "Failed to generate content",
+  type = "summary", // 'summary' or 'suggestions'
+  generationTime = null,
+  onCopy,
+  onFeedback,
+  className = ""
+}) {
+  const [copied, setCopied] = useState(false)
+  const [feedback, setFeedback] = useState(null)
+
+  const handleCopy = async () => {
+    if (content && onCopy) {
+      await onCopy(content)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    }
+  }
+
+  const handleFeedback = (type) => {
+    setFeedback(type)
+    if (onFeedback) onFeedback(type)
+  }
+
+  if (isLoading) {
+    return (
+      <div className={cn(
+        "transform transition-all duration-500 ease-out",
+        "bg-white border border-blue-100/60 rounded-xl p-5 shadow-lg",
+        className
+      )}>
+        <LoadingSkeleton />
+      </div>
+    )
+  }
+
+  if (isError) {
+    return (
+      <div className={cn(
+        "transform transition-all duration-500 ease-out animate-in slide-in-from-bottom-4",
+        "bg-red-50 border border-red-200 rounded-xl p-5 shadow-sm",
+        className
+      )}>
+        <div className="flex items-center gap-3">
+          <div className="w-8 h-8 bg-red-500 rounded-lg flex items-center justify-center">
+            <Brain className="w-4 h-4 text-white" />
+          </div>
+          <div>
+            <span className="text-sm font-semibold text-red-800">AI Error</span>
+            <p className="text-xs text-red-600 mt-1">{errorMessage}</p>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  if (!content) return null
+
+  const bgColor = type === 'summary'
+    ? 'bg-yellow-50 border-yellow-200'
+    : 'bg-blue-50 border-blue-200'
+
+  const iconColor = type === 'summary'
+    ? 'from-yellow-500 to-orange-600'
+    : 'from-blue-500 to-indigo-600'
+
+  const badgeColor = type === 'summary'
+    ? 'bg-yellow-100 text-yellow-700'
+    : 'bg-blue-100 text-blue-700'
+
+  return (
+    <div className={cn(
+      "transform transition-all duration-500 ease-out animate-in slide-in-from-bottom-4",
+      "hover:scale-[1.01] transition-transform duration-200",
+      className
+    )}>
+      <div className={cn(
+        "border rounded-xl p-5 shadow-lg hover:shadow-xl transition-all duration-300",
+        bgColor
+      )}>
+
+        {/* Header with AI indicator */}
+        <div className="flex items-center gap-3 mb-4">
+          <div className="relative">
+            <div className={cn(
+              "w-8 h-8 bg-gradient-to-r rounded-lg flex items-center justify-center shadow-md",
+              iconColor
+            )}>
+              {type === 'summary' ? (
+                <Sparkles className="w-4 h-4 text-white" />
+              ) : (
+                <Brain className="w-4 h-4 text-white" />
+              )}
+            </div>
+            <div className="absolute -top-0.5 -right-0.5 w-3 h-3 bg-green-400 rounded-full animate-pulse shadow-sm"></div>
+          </div>
+          <div className="flex-1">
+            <span className="text-sm font-semibold text-gray-800">{title}</span>
+            <div className="flex items-center gap-2 mt-0.5">
+              <span className="text-xs text-gray-500">Generated by</span>
+              <div className={cn(
+                "px-2 py-0.5 rounded-full text-xs font-medium",
+                badgeColor
+              )}>
+                Llama3
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Streaming content area */}
+        <div className="mb-4">
+          <TypewriterText text={content} speed={20} />
+        </div>
+
+        {/* Action buttons */}
+        <div className="flex items-center justify-between pt-3 border-t border-gray-100">
+          <div className="flex items-center gap-2">
+            <button
+              onClick={handleCopy}
+              className="group p-1.5 hover:bg-white/50 rounded-full transition-all duration-200 relative"
+              title="Copy to clipboard"
+            >
+              {copied ? (
+                <CheckCircle className="w-3.5 h-3.5 text-green-500" />
+              ) : (
+                <Copy className="w-3.5 h-3.5 text-gray-500 group-hover:text-gray-700" />
+              )}
+              {copied && (
+                <span className="absolute -top-8 left-1/2 transform -translate-x-1/2 px-2 py-1 bg-green-500 text-white text-xs rounded whitespace-nowrap">
+                  Copied!
+                </span>
+              )}
+            </button>
+
+            <button
+              onClick={() => handleFeedback('up')}
+              className={cn(
+                "p-1.5 rounded-full transition-all duration-200",
+                feedback === 'up'
+                  ? "bg-green-100 text-green-600"
+                  : "hover:bg-white/50 text-gray-500 hover:text-gray-700"
+              )}
+              title="Good response"
+            >
+              <ThumbsUp className="w-3.5 h-3.5" />
+            </button>
+
+            <button
+              onClick={() => handleFeedback('down')}
+              className={cn(
+                "p-1.5 rounded-full transition-all duration-200",
+                feedback === 'down'
+                  ? "bg-red-100 text-red-600"
+                  : "hover:bg-white/50 text-gray-500 hover:text-gray-700"
+              )}
+              title="Poor response"
+            >
+              <ThumbsDown className="w-3.5 h-3.5" />
+            </button>
+          </div>
+
+          {generationTime && (
+            <span className="text-xs text-gray-400 font-mono">
+              Generated in {generationTime}s
+            </span>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}

@@ -22,13 +22,26 @@ router.post('/ai/summarize', requireAuth, async (req, res) => {
   }
 });
 
-// Suggest replies for latest message
-// POST /ai/suggest-replies { subject, lastMessage: { html, text }, tone }
+// Suggest replies for latest message with full context
+// POST /ai/suggest-replies { subject, lastMessage: { html, text }, tone, fullThread, currentUserEmail }
 router.post('/ai/suggest-replies', requireAuth, async (req, res) => {
   try {
-    const { subject, lastMessage = null, tone = 'neutral' } = req.body || {};
+    const {
+      subject,
+      lastMessage = null,
+      tone = 'neutral',
+      fullThread = [],
+      currentUserEmail = ''
+    } = req.body || {};
+
     if (!lastMessage) return res.status(400).json({ error: 'lastMessage required' });
-    const prompt = suggestRepliesPrompt(subject, lastMessage, { tone });
+
+    const prompt = suggestRepliesPrompt(subject, lastMessage, {
+      tone,
+      fullThread,
+      currentUserEmail
+    });
+
     const out = await chat(prompt, { options: { temperature: 0.4 } });
     return res.json({ suggestions: out.content });
   } catch (e) {

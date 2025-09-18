@@ -1,0 +1,145 @@
+/* AI Content Box Animations */
+@keyframes slideInFromBottom {
+  0% {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes fadeIn {
+  0% {
+    opacity: 0;
+  }
+  100% {
+    opacity: 1;
+  }
+}
+
+@keyframes pulseGlow {
+  0%, 100% {
+    box-shadow: 0 0 5px rgba(59, 130, 246, 0.3);
+  }
+  50% {
+    box-shadow: 0 0 20px rgba(59, 130, 246, 0.6);
+  }
+}
+
+@keyframes shimmer {
+  0% {
+    background-position: -200px 0;
+  }
+  100% {
+    background-position: calc(200px + 100%) 0;
+  }
+}
+
+.animate-in {
+  animation: slideInFromBottom 0.5s ease-out;
+}
+
+.slide-in-from-bottom-4 {
+  animation: slideInFromBottom 0.5s ease-out;
+}
+
+.typewriter-cursor {
+  animation: blink 1s infinite;
+}
+
+@keyframes blink {
+  0%, 50% {
+    opacity: 1;
+  }
+  51%, 100% {
+    opacity: 0;
+  }
+}
+
+/* Loading shimmer effect */
+.shimmer {
+  background: linear-gradient(90deg, #f3f4f6 0%, #e5e7eb 50%, #f3f4f6 100%);
+  background-size: 200px 100%;
+  animation: shimmer 1.5s infinite;
+}
+
+/* Smooth hover transitions */
+.hover-scale {
+  transition: transform 0.2s ease-in-out;
+}
+
+.hover-scale:hover {
+  transform: scale(1.02);
+}
+
+/* AI-specific animations */
+.ai-glow {
+  animation: pulseGlow 2s infinite;
+}
+
+.ai-typing::after {
+  content: '|';
+  animation: blink 1s infinite;
+  margin-left: 1px;
+}
+
+/* Success animations */
+@keyframes checkmark {
+  0% {
+    transform: scale(0);
+    opacity: 0;
+  }
+  50% {
+    transform: scale(1.2);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+.animate-checkmark {
+  animation: checkmark 0.3s ease-out;
+}
+
+/* Feedback button animations */
+@keyframes thumbsUp {
+  0% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.2);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+.animate-thumbs-up {
+  animation: thumbsUp 0.3s ease-out;
+}
+
+/* Copy button success state */
+@keyframes copySuccess {
+  0% {
+    transform: translateY(0);
+    opacity: 0;
+  }
+  20% {
+    opacity: 1;
+  }
+  80% {
+    opacity: 1;
+  }
+  100% {
+    transform: translateY(-5px);
+    opacity: 0;
+  }
+}
+
+.copy-success-tooltip {
+  animation: copySuccess 2s ease-out;
+}
