@@ -86,6 +86,67 @@ try {
 //     console.log('Server is running at Port 3000');
 // });
 
+async function startHttp(app) {
+  const base = parseInt(process.env.HTTP_PORT || '3000', 10);
+  const maxTries = 10;
+  for (let i = 0; i < maxTries; i++) {
+    const port = base + i;
+    try {
+      await new Promise((resolve, reject) => {
+        const srv = http.createServer(app);
+        srv.once('error', (err) => {
+          if (err && err.code === 'EADDRINUSE') {
+            console.warn(`HTTP port ${port} in use, trying ${port + 1}...`);
+            try { srv.close(); } catch (_) {}
+            reject(err);
+          } else {
+            reject(err);
+          }
+        });
+        srv.listen(port, () => {
+          console.log(`✅ HTTP server running at http://localhost:${port}`);
+          resolve();
+        });
+      });
+      return; // started
+    } catch (e) {
+      if (!(e && e.code === 'EADDRINUSE')) throw e;
+      // else try next port
+    }
+  }
+  throw new Error(`No available HTTP ports from ${base} to ${base + maxTries - 1}`);
+}
+
+async function startHttps(app, ssl) {
+  const base = parseInt(process.env.HTTPS_PORT || '3443', 10);
+  const maxTries = 5;
+  for (let i = 0; i < maxTries; i++) {
+    const port = base + i;
+    try {
+      await new Promise((resolve, reject) => {
+        const srv = https.createServer(ssl, app);
+        srv.once('error', (err) => {
+          if (err && err.code === 'EADDRINUSE') {
+            console.warn(`HTTPS port ${port} in use, trying ${port + 1}...`);
+            try { srv.close(); } catch (_) {}
+            reject(err);
+          } else {
+            reject(err);
+          }
+        });
+        srv.listen(port, () => {
+          console.log(`🔒 HTTPS server running at https://localhost:${port}`);
+          resolve();
+        });
+      });
+      return; // started
+    } catch (e) {
+      if (!(e && e.code === 'EADDRINUSE')) throw e;
+    }
+  }
+  console.warn(`HTTPS disabled: no available ports from ${base} to ${base + maxTries - 1}`);
+}
+
 // Run minimal migrations and start servers
 (async () => {
   try {
@@ -95,13 +156,7 @@ try {
     console.error('Migration failed:', e);
   }
 
-  http.createServer(app).listen(process.env.HTTP_PORT || 3000, () => {
-    console.log(`✅ HTTP server running at http://localhost:${process.env.HTTP_PORT || 3000}`);
-  });
+  await startHttp(app);
 
-  if (sslOptions) {
-    https.createServer(sslOptions, app).listen(process.env.HTTPS_PORT || 3443, () => {
-      console.log(`🔒 HTTPS server running at https://localhost:${process.env.HTTPS_PORT || 3443}`);
-    });
-  }
+  if (sslOptions) await startHttps(app, sslOptions);
 })();
