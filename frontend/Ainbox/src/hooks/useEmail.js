@@ -13,7 +13,8 @@ import {
   subscribeToEmailUpdates,
   formatEmailForDisplay,
   withErrorHandling,
-  getInboxStats
+  getInboxStats,
+  getSpamStats
 } from '../services/emailApi'
 
 export function useEmail() {
@@ -28,6 +29,7 @@ export function useEmail() {
   const [total, setTotal] = useState(0)
   const [selectedEmails, setSelectedEmails] = useState(new Set())
   const [unreadCount, setUnreadCount] = useState(0)
+  const [spamUnreadCount, setSpamUnreadCount] = useState(0)
   const unsubscribeRef = useRef(null)
 
   // Load emails for a specific folder
@@ -69,11 +71,14 @@ export function useEmail() {
         const knownEnd = (res?.emails?.length || 0)
         return Math.max(apiTotal, knownEnd)
       })
-      // Load inbox stats for unread when viewing inbox
+      // Load stats for current folder
       if (folder === 'inbox') {
         const stats = await getInboxStats()
         setUnreadCount(stats.unread || 0)
         if (Number.isFinite(stats.total)) setTotal(stats.total)
+      } else if (folder === 'spam') {
+        const s = await getSpamStats()
+        setSpamUnreadCount(s.unread || 0)
       }
     } catch (_) { /* state already set in loadEmails */ }
   }, [loadEmails])
@@ -109,6 +114,9 @@ export function useEmail() {
         const stats = await getInboxStats()
         setUnreadCount(stats.unread || 0)
         if (Number.isFinite(stats.total)) setTotal(stats.total)
+      } else if (folder === 'spam') {
+        const s = await getSpamStats()
+        setSpamUnreadCount(s.unread || 0)
       }
     } catch (_) { /* already handled */ }
   }, [loading, currentPage, pageNextCursors, loadEmails])
@@ -137,6 +145,9 @@ export function useEmail() {
         const stats = await getInboxStats()
         setUnreadCount(stats.unread || 0)
         if (Number.isFinite(stats.total)) setTotal(stats.total)
+      } else if (folder === 'spam') {
+        const s = await getSpamStats()
+        setSpamUnreadCount(s.unread || 0)
       }
     } catch (_) { /* already handled */ }
   }, [loading, currentPage, pageCursors, loadEmails])
@@ -217,8 +228,9 @@ export function useEmail() {
       return email
     }).filter(Boolean))
 
-    // Adjust unread counter locally first
+    // Adjust unread counters locally first
     setUnreadCount((prev) => Math.max(0, prev + unreadDelta))
+    setSpamUnreadCount((prev) => Math.max(0, prev + unreadDelta))
     console.log('Unread delta:', unreadDelta)
 
     // Clear selection after bulk actions
@@ -276,6 +288,10 @@ export function useEmail() {
         const stats = await getInboxStats()
         setUnreadCount(stats.unread || 0)
         if (Number.isFinite(stats.total)) setTotal(stats.total)
+      } catch (_) { /* ignore */ }
+      try {
+        const s = await getSpamStats()
+        setSpamUnreadCount(s.unread || 0)
       } catch (_) { /* ignore */ }
     }, 100)
 
@@ -388,6 +404,7 @@ export function useEmail() {
     nextCursor,
     hasPrev: currentPage > 1,
     unreadCount,
+    spamUnreadCount,
 
     // Actions
     loadEmails, // low-level

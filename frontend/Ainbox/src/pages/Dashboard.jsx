@@ -17,10 +17,8 @@ export default function Dashboard() {
     hasPrev,
     total,
     currentPage,
-    // expose unreadCount state from hook
-    // (added to hook in this change set)
-    // @ts-ignore
     unreadCount,
+    spamUnreadCount,
     selectedEmails,
     loadFirstPage,
     loadNextPage,
@@ -141,6 +139,7 @@ export default function Dashboard() {
           onFolderChange={handleFolderChange}
           onCompose={handleCompose}
           inboxUnread={unreadCount}
+          spamUnread={spamUnreadCount}
         />
 
         {/* Main content area */}

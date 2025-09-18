@@ -32,14 +32,14 @@ const labels = [
   { id: 'marketing', label: 'Marketing', color: 'bg-pink-500' },
 ]
 
-export default function EmailSidebar({ activeFolder, onFolderChange, onCompose, inboxUnread = 0 }) {
+export default function EmailSidebar({ activeFolder, onFolderChange, onCompose, inboxUnread = 0, spamUnread = 0 }) {
   const [storageUsed] = useState(33)
 
   // Debug log for unread count
   console.log('EmailSidebar: inboxUnread =', inboxUnread)
 
   return (
-    <div className="w-64 bg-white border-r border-gray-200 flex flex-col h-screen overflow-hidden">
+    <div className="w-50 bg-white border-r border-gray-200 flex flex-col h-screen overflow-hidden">
       {/* Logo */}
       <div className="flex-shrink-0 p-6 border-b border-gray-200">
         <div className="flex items-center gap-2">
@@ -47,7 +47,7 @@ export default function EmailSidebar({ activeFolder, onFolderChange, onCompose, 
             <Star className="w-4 h-4 text-white" />
           </div>
           <div>
-            <h1 className="text-lg font-semibold text-gray-900">Ainbox</h1>
+            <h1 className="text-lg font-semibold text-gray-900">Fyl</h1>
             <p className="text-sm text-gray-500">AI-Powered Email</p>
           </div>
         </div>
@@ -58,7 +58,7 @@ export default function EmailSidebar({ activeFolder, onFolderChange, onCompose, 
         {sidebarItems.map((item) => {
           const Icon = item.icon
           const isActive = activeFolder === item.id
-          const dynamicCount = item.id === 'inbox' ? inboxUnread : item.count
+          const dynamicCount = item.id === 'inbox' ? inboxUnread : item.id === 'spam' ? spamUnread : item.count
 
           // Debug log for each item
           if (item.id === 'inbox') {

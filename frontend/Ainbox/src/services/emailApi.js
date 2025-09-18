@@ -451,6 +451,24 @@ export async function getInboxStats() {
   }
 }
 
+export async function getSpamStats() {
+  try {
+    const provider = await getCurrentProvider()
+    if (provider === 'gmail') {
+      const res = await apiFetch('/gmail/spam-stats')
+      return { total: res.total || 0, unread: res.unread || 0 }
+    }
+    if (provider === 'outlook') {
+      const res = await apiFetch('/outlook/spam-stats')
+      return { total: res.total || 0, unread: res.unread || 0 }
+    }
+    return { total: 0, unread: 0 }
+  } catch (e) {
+    console.warn('Failed to load spam stats:', e)
+    return { total: 0, unread: 0 }
+  }
+}
+
 export async function getEmailById(emailId) {
   const response = await apiFetch(`/api/v1/emails/${emailId}`)
   return response.data

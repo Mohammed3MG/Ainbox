@@ -152,7 +152,7 @@ router.get('/emails', requireAuth, async (req, res) => {
 });
 
   // Inbox stats: Primary category (category:primary) within INBOX
-  router.get('/gmail/inbox-stats', requireAuth, async (req, res) => {
+router.get('/gmail/inbox-stats', requireAuth, async (req, res) => {
     try {
       const userId = String(req.auth?.sub);
       const key = `inbox:stats:gmail:${userId}`;
@@ -215,6 +215,27 @@ router.post('/gmail/mark-read', requireAuth, async (req, res) => {
   } catch (e) {
     console.error('gmail/mark-read failed:', e);
     return res.status(401).json({ error: 'Unable to mark Gmail threads as read' });
+  }
+});
+
+// Spam stats (Gmail): threads in SPAM label
+router.get('/gmail/spam-stats', requireAuth, async (req, res) => {
+  try {
+    const userId = String(req.auth?.sub);
+    const key = `spam:stats:gmail:${userId}`;
+    const value = await cache.wrap(key, 45_000, async () => {
+      const oauth2Client = await getGoogleOAuthClientFromCookies(req);
+      const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
+      const label = await gmail.users.labels.get({ userId: 'me', id: 'SPAM' });
+      const data = label.data || {};
+      const total = Number.isFinite(data.threadsTotal) ? data.threadsTotal : data.messagesTotal || 0;
+      const unread = Number.isFinite(data.threadsUnread) ? data.threadsUnread : data.messagesUnread || 0;
+      return { total, unread };
+    });
+    return res.json(value);
+  } catch (err) {
+    console.error(err);
+    return res.status(401).json({ error: 'Unable to access Gmail spam stats' });
   }
 });
 
@@ -282,14 +303,26 @@ router.get('/threads', requireAuth, async (req, res) => {
     const unread = String(req.query.unread || 'false') === 'true';
     const q = req.query.q || undefined;
 
-    // Only show Primary category within INBOX
-    const labelIds = ['INBOX', 'CATEGORY_PERSONAL'];
+    // Select label filter based on query
+    let labelIds = [];
+    const qStr = (q || '').toLowerCase();
+    if (qStr.includes('in:trash')) {
+      labelIds = ['TRASH'];
+    } else if (qStr.includes('in:spam')) {
+      labelIds = ['SPAM'];
+    } else if (qStr.includes('in:archive')) {
+      // archive => messages without INBOX; don't force a label filter here
+      labelIds = [];
+    } else {
+      // default Inbox Primary
+      labelIds = ['INBOX', 'CATEGORY_PERSONAL'];
+    }
     if (unread) labelIds.push('UNREAD');
 
     const listResp = await gmail.users.threads.list({
       userId: 'me',
       maxResults,
-      labelIds,
+      labelIds: labelIds.length ? labelIds : undefined,
       pageToken,
       q,
       // include resultSizeEstimate for totals

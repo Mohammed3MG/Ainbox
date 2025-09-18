@@ -160,6 +160,30 @@ router.get('/outlook/inbox-stats', requireAuth, async (req, res) => {
   }
 });
 
+// Spam stats (Outlook): Junk Email folder
+router.get('/outlook/spam-stats', requireAuth, async (req, res) => {
+  try {
+    const userId = String(req.auth?.sub);
+    const key = `spam:stats:outlook:${userId}`;
+    const value = await require('../lib/cache').wrap(key, 45_000, async () => {
+      const token = await ensureMsAccessToken(req, res);
+      const url = 'https://graph.microsoft.com/v1.0/me/mailFolders/JunkEmail?$select=totalItemCount,unreadItemCount';
+      const resp = await httpGet(url, token);
+      const json = await readJsonSafe(resp);
+      if (!resp.ok) {
+        const err = new Error(json.error?.message || json._raw || `HTTP ${resp.status}`);
+        err.status = resp.status;
+        throw err;
+      }
+      return { total: json.totalItemCount || 0, unread: json.unreadItemCount || 0 };
+    });
+    return res.json(value);
+  } catch (e) {
+    console.error(e);
+    return res.status(401).json({ error: 'Unable to access Outlook spam stats' });
+  }
+});
+
 // Mark Outlook conversations read/unread
 async function listConversationMessageIds(token, conversationId) {
   const ids = [];
