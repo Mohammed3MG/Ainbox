@@ -32,8 +32,13 @@ app.use(cors({
 app.use(express.json({ limit: '35mb' }));
 app.use(cookieParser());
 app.use(passport.initialize());
-// Configure Google OAuth strategy in a separate module
-configureGoogleStrategy(passport);
+// Configure Google OAuth strategy when env is present
+const hasGoogle = process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET && process.env.GOOGLE_CALLBACK_URL;
+if (hasGoogle) {
+  configureGoogleStrategy(passport);
+} else {
+  console.warn('Google OAuth disabled: missing GOOGLE_CLIENT_ID/SECRET/CALLBACK_URL');
+}
 
 // Mount routers
 app.use(googleRouter);
