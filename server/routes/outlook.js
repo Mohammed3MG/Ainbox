@@ -264,8 +264,13 @@ router.post('/outlook/mark-read', requireAuth, async (req, res) => {
           const unreadNow = await readState.unreadCount(userId, 'outlook');
           broadcastToUser(userId, { type: 'unread_count_updated', unread: unreadNow });
         } catch (_) {}
-        if (msgIds.length > 1) await batchPatchMessages(token, msgIds, true);
-        else if (msgIds[0]) await httpPatchJson(`https://graph.microsoft.com/v1.0/me/messages/${msgIds[0]}`, token, { isRead: true });
+        if (msgIds.length > 1) {
+          await batchPatchMessages(token, msgIds, true);
+          await readState.clearOverrideOnSuccess(userId, 'outlook', convId, true);
+        } else if (msgIds[0]) {
+          await httpPatchJson(`https://graph.microsoft.com/v1.0/me/messages/${msgIds[0]}`, token, { isRead: true });
+          await readState.clearOverrideOnSuccess(userId, 'outlook', convId, true);
+        }
         ok += 1;
       } catch (_) {}
     }
@@ -319,8 +324,13 @@ router.post('/outlook/mark-unread', requireAuth, async (req, res) => {
           const unreadNow = await readState.unreadCount(userId, 'outlook');
           broadcastToUser(userId, { type: 'unread_count_updated', unread: unreadNow });
         } catch (_) {}
-        if (msgIds.length > 1) await batchPatchMessages(token, msgIds, false);
-        else if (msgIds[0]) await httpPatchJson(`https://graph.microsoft.com/v1.0/me/messages/${msgIds[0]}`, token, { isRead: false });
+        if (msgIds.length > 1) {
+          await batchPatchMessages(token, msgIds, false);
+          await readState.clearOverrideOnSuccess(userId, 'outlook', convId, true);
+        } else if (msgIds[0]) {
+          await httpPatchJson(`https://graph.microsoft.com/v1.0/me/messages/${msgIds[0]}`, token, { isRead: false });
+          await readState.clearOverrideOnSuccess(userId, 'outlook', convId, true);
+        }
         ok += 1;
       } catch (_) {}
     }

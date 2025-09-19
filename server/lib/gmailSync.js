@@ -86,7 +86,9 @@ class GmailSyncService {
 
       // Get current inbox stats
       const newStats = await this.getGmailStats(gmail);
-      const cachedStats = await emailCache.getUserStats(userId, 'gmail');
+      // Use the same key format as Gmail route
+      const cacheKey = `inbox:stats:gmail:${userId}`;
+      const cachedStats = await require('./smartCache').get(cacheKey);
 
       // Compare with cached stats
       if (this.hasStatsChanged(cachedStats, newStats)) {
@@ -95,8 +97,8 @@ class GmailSyncService {
           new: { unread: newStats.unread, total: newStats.total }
         });
 
-        // Update cache
-        await emailCache.setUserStats(userId, 'gmail', newStats);
+        // Update cache using the same key format as Gmail route
+        await require('./smartCache').set(cacheKey, newStats, 45_000);
 
         // Invalidate related caches
         await emailCache.invalidateUserInbox(userId, 'gmail');

@@ -194,14 +194,16 @@ router.get('/emails', requireAuth, async (req, res) => {
 });
 
   // Inbox stats: Primary category (category:primary) within INBOX
-router.get('/gmail/inbox-stats', requireAuth, async (req, res) => {
-    try {
-      const userId = String(req.auth?.sub);
-      const key = `inbox:stats:gmail:${userId}`;
-      const value = await cache.wrap(key, 45_000, async () => {
-        const oauth2Client = await getGoogleOAuthClientFromCookies(req);
-        return computePrimaryInboxCounts(oauth2Client);
-      });
+  router.get('/gmail/inbox-stats', requireAuth, async (req, res) => {
+      try {
+        const userId = String(req.auth?.sub);
+        const key = `inbox:stats:gmail:${userId}`;
+        const value = await cache.wrap(key, 45_000, async () => {
+          const oauth2Client = await getGoogleOAuthClientFromCookies(req);
+          return computePrimaryInboxCounts(oauth2Client);
+        });
+        // Persist latest stats to Redis-backed user stats cache for instant updates
+        try { await emailCache.setUserStats(userId, 'gmail', value); } catch (_) {}
 
       // Auto-start Gmail sync for this user when they access Gmail stats
       const syncStatus = gmailSync.getSyncStatus(userId);
@@ -241,25 +243,41 @@ router.post('/gmail/mark-read', requireAuth, async (req, res) => {
         setImmediate(async () => {
           try {
             await gmail.users.threads.modify({ userId: 'me', id, requestBody: { removeLabelIds: ['UNREAD'] } });
-            await readState.clearOverride(uid, 'gmail', id);
-          } catch (_) {}
+            await readState.clearOverrideOnSuccess(uid, 'gmail', id, true);
+          } catch (err) {
+            console.log(`❌ Failed to sync read state for ${id}, keeping override:`, err.message);
+            await readState.clearOverrideOnSuccess(uid, 'gmail', id, false);
+          }
         });
       } catch (_) {}
     }
-    // Invalidate cache, broadcast updated counts (Primary only)
-    try {
-      const userId = String(req.auth?.sub);
-      cache.del(`inbox:stats:gmail:${userId}`);
-      const oauth2Client2 = await getGoogleOAuthClientFromCookies(req);
-      const stats = await computePrimaryInboxCounts(oauth2Client2);
-      broadcastToUser(userId, { type: 'unread_count_updated', unread: stats.unread, total: stats.total });
-    } catch (_) {}
-
-    // Invalidate cache after marking emails as read
+    // Invalidate cache after marking emails as read (lists/threads)
     {
       const userId = String(req.auth?.sub);
       await emailCache.invalidateOnAction(userId, 'gmail', 'mark_read', ids);
     }
+
+    // Instant Redis-backed update: decrement unread quickly, then background resync
+    try {
+      const userId = String(req.auth?.sub);
+      const cur = (await emailCache.getUserStats(userId, 'gmail')) || null;
+      if (cur) {
+        const next = { ...cur, unread: Math.max(0, (cur.unread || 0) - ids.length) };
+        await emailCache.setUserStats(userId, 'gmail', next);
+        broadcastToUser(userId, { type: 'unread_count_updated', unread: next.unread, total: next.total });
+      }
+    } catch (_) {}
+
+    // Background resync to accurate Primary-only counts
+    setImmediate(async () => {
+      try {
+        const userId = String(req.auth?.sub);
+        const oauth2Client2 = await getGoogleOAuthClientFromCookies(req);
+        const stats = await computePrimaryInboxCounts(oauth2Client2);
+        await emailCache.setUserStats(userId, 'gmail', stats);
+        broadcastToUser(userId, { type: 'unread_count_updated', unread: stats.unread, total: stats.total });
+      } catch (_) {}
+    });
 
     return res.json({ ok, total: ids.length });
   } catch (e) {
@@ -308,22 +326,41 @@ router.post('/gmail/mark-unread', requireAuth, async (req, res) => {
         setImmediate(async () => {
           try {
             await gmail.users.threads.modify({ userId: 'me', id, requestBody: { addLabelIds: ['UNREAD'] } });
-            await readState.clearOverride(uid, 'gmail', id);
-          } catch (_) {}
+            await readState.clearOverrideOnSuccess(uid, 'gmail', id, true);
+          } catch (err) {
+            console.log(`❌ Failed to sync unread state for ${id}, keeping override:`, err.message);
+            await readState.clearOverrideOnSuccess(uid, 'gmail', id, false);
+          }
         });
       } catch (_) {}
     }
+    // Invalidate cache after marking emails as unread (lists/threads)
+    {
+      const userId = String(req.auth?.sub);
+      await emailCache.invalidateOnAction(userId, 'gmail', 'mark_unread', ids);
+    }
+
+    // Instant Redis-backed update: increment unread quickly, then background resync
     try {
       const userId = String(req.auth?.sub);
-      cache.del(`inbox:stats:gmail:${userId}`);
-      const oauth2Client2 = await getGoogleOAuthClientFromCookies(req);
-      const stats = await computePrimaryInboxCounts(oauth2Client2);
-      broadcastToUser(userId, { type: 'unread_count_updated', unread: stats.unread, total: stats.total });
+      const cur = (await emailCache.getUserStats(userId, 'gmail')) || null;
+      if (cur) {
+        const next = { ...cur, unread: Math.max(0, (cur.unread || 0) + ids.length) };
+        await emailCache.setUserStats(userId, 'gmail', next);
+        broadcastToUser(userId, { type: 'unread_count_updated', unread: next.unread, total: next.total });
+      }
     } catch (_) {}
 
-    // Invalidate cache after marking emails as unread
-    const userId = String(req.auth?.sub);
-    await emailCache.invalidateOnAction(userId, 'gmail', 'mark_unread', ids);
+    // Background resync to accurate Primary-only counts
+    setImmediate(async () => {
+      try {
+        const userId = String(req.auth?.sub);
+        const oauth2Client2 = await getGoogleOAuthClientFromCookies(req);
+        const stats = await computePrimaryInboxCounts(oauth2Client2);
+        await emailCache.setUserStats(userId, 'gmail', stats);
+        broadcastToUser(userId, { type: 'unread_count_updated', unread: stats.unread, total: stats.total });
+      } catch (_) {}
+    });
 
     return res.json({ ok, total: ids.length });
   } catch (e) {
@@ -348,13 +385,30 @@ router.post('/gmail/trash', requireAuth, async (req, res) => {
         ok += 1;
       } catch (_) {}
     }
+    // Invalidate cache for lists/threads and broadcast row deletion
     try {
       await emailCache.invalidateOnAction(uid, 'gmail', 'delete', ids);
       broadcastToUser(uid, { type: 'email_deleted', emailId: ids[0] });
-      const oauth2Client2 = await getGoogleOAuthClientFromCookies(req);
-      const stats = await computePrimaryInboxCounts(oauth2Client2);
-      broadcastToUser(uid, { type: 'unread_count_updated', unread: stats.unread, total: stats.total });
     } catch (_) {}
+
+    // Instant Redis-backed update: decrement total quickly, then background resync
+    try {
+      const cur = (await emailCache.getUserStats(uid, 'gmail')) || null;
+      if (cur) {
+        const next = { ...cur, total: Math.max(0, (cur.total || 0) - ids.length) };
+        await emailCache.setUserStats(uid, 'gmail', next);
+        broadcastToUser(uid, { type: 'unread_count_updated', unread: next.unread, total: next.total });
+      }
+    } catch (_) {}
+
+    setImmediate(async () => {
+      try {
+        const oauth2Client2 = await getGoogleOAuthClientFromCookies(req);
+        const stats = await computePrimaryInboxCounts(oauth2Client2);
+        await emailCache.setUserStats(uid, 'gmail', stats);
+        broadcastToUser(uid, { type: 'unread_count_updated', unread: stats.unread, total: stats.total });
+      } catch (_) {}
+    });
     return res.json({ ok, total: ids.length });
   } catch (e) {
     console.error('gmail/trash failed:', e);

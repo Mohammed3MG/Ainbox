@@ -221,8 +221,9 @@ export default function EmailList({
                 style={style}
                 className={cn(
                   "flex items-center gap-4 p-4 hover:bg-gray-50 cursor-pointer transition-colors border-b border-gray-100",
-                  selectedEmailId === email.id && "bg-blue-50 border-r-2 border-blue-500",
-                  email.isRead ? "bg-gray-100" : "bg-[#ffeabd]"
+                  // Apply read/unread background first, then selection highlight so selection wins
+                  email.isRead ? "bg-gray-100" : "bg-[#ffeabd]",
+                  selectedEmailId === email.id && "bg-blue-50 border-r-2 border-blue-500"
                 )}
                 onClick={() => onEmailSelect(email.id)}
               >

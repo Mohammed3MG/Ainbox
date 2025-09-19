@@ -234,9 +234,8 @@ export function useEmail() {
       return email
     }).filter(Boolean))
 
-    // Adjust unread counters locally first
+    // Adjust unread counters locally first (inbox only)
     setUnreadCount((prev) => Math.max(0, prev + unreadDelta))
-    setSpamUnreadCount((prev) => Math.max(0, prev + unreadDelta))
     console.log('Unread delta:', unreadDelta)
 
     // Clear selection after bulk actions

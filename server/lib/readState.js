@@ -24,7 +24,12 @@ function unreadKey(userId, provider) {
 }
 
 async function addToSet(k, id) {
-  if (enabled && redis) return redis.sAdd(k, String(id));
+  if (enabled && redis) {
+    await redis.sAdd(k, String(id));
+    // Set 24 hour TTL for persistence across page refreshes
+    await redis.expire(k, 24 * 60 * 60);
+    return;
+  }
   const set = mem.read.get(k) || new Set();
   set.add(String(id));
   mem.read.set(k, set);
@@ -54,15 +59,27 @@ async function setOverride(userId, provider, id, state /* 'read'|'unread' */) {
   if (state === 'read') {
     await addToSet(rKey, id);
     await removeFromSet(uKey, id);
+    console.log(`📝 Set override: ${provider}:${id} -> READ (persists 24h)`);
   } else if (state === 'unread') {
     await addToSet(uKey, id);
     await removeFromSet(rKey, id);
+    console.log(`📝 Set override: ${provider}:${id} -> UNREAD (persists 24h)`);
   }
 }
 
 async function clearOverride(userId, provider, id) {
   await removeFromSet(keyFor(userId, provider, 'read'), id);
   await removeFromSet(keyFor(userId, provider, 'unread'), id);
+}
+
+// Only clear override after confirmed API success
+async function clearOverrideOnSuccess(userId, provider, id, apiSuccess = false) {
+  if (apiSuccess) {
+    console.log(`✅ Clearing override for ${provider}:${id} after confirmed API sync`);
+    await clearOverride(userId, provider, id);
+  } else {
+    console.log(`⏳ Keeping override for ${provider}:${id} - API sync not confirmed`);
+  }
 }
 
 async function getOverride(userId, provider, id) {
@@ -92,6 +109,7 @@ async function deltaCounts(userId, provider) {
 module.exports = {
   setOverride,
   clearOverride,
+  clearOverrideOnSuccess,
   getOverride,
   deltaCounts,
   // Unread set helpers
