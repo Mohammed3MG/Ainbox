@@ -203,6 +203,8 @@ router.get('/outlook/inbox-stats', requireAuth, async (req, res) => {
         unread: unreadJson['@odata.count'] || 0
       };
     });
+    // Persist latest stats so UI can use Redis-backed stats immediately elsewhere
+    try { await emailCache.setUserStats(userId, 'outlook', value); } catch (_) {}
     return res.json(value);
   } catch (e) {
     console.error(e);
@@ -274,29 +276,40 @@ router.post('/outlook/mark-read', requireAuth, async (req, res) => {
         ok += 1;
       } catch (_) {}
     }
+    // Invalidate stats cache and update Redis-backed stats immediately with a delta
     try {
       const userId = String(req.auth?.sub);
       cache.del(`inbox:stats:outlook:${userId}`);
-      const token2 = await ensureMsAccessToken(req, res);
-      // Get focused/primary email counts for accurate stats
-      const unreadUrl = "https://graph.microsoft.com/v1.0/me/messages?$filter=parentFolderId eq 'Inbox' and inferenceClassification eq 'focused' and isRead eq false&$count=true&$top=1";
-      const totalUrl = "https://graph.microsoft.com/v1.0/me/messages?$filter=parentFolderId eq 'Inbox' and inferenceClassification eq 'focused'&$count=true&$top=1";
-      const [unreadResp, totalResp] = await Promise.all([
-        httpGet(unreadUrl, token2, { 'ConsistencyLevel': 'eventual' }),
-        httpGet(totalUrl, token2, { 'ConsistencyLevel': 'eventual' })
-      ]);
-      const [unreadJson, totalJson] = await Promise.all([
-        readJsonSafe(unreadResp),
-        readJsonSafe(totalResp)
-      ]);
-      if (unreadResp.ok && totalResp.ok) {
-        broadcastToUser(userId, {
-          type: 'unread_count_updated',
-          unread: unreadJson['@odata.count'] || 0,
-          total: totalJson['@odata.count'] || 0
-        });
+      const cur = (await emailCache.getUserStats(userId, 'outlook')) || null;
+      if (cur) {
+        const next = { ...cur, unread: Math.max(0, (cur.unread || 0) - ids.length) };
+        await emailCache.setUserStats(userId, 'outlook', next);
+        broadcastToUser(userId, { type: 'unread_count_updated', unread: next.unread, total: next.total });
       }
     } catch (_) {}
+
+    // Background recount from Graph for accuracy, then refresh Redis stats and broadcast
+    setImmediate(async () => {
+      try {
+        const userId = String(req.auth?.sub);
+        const token2 = await ensureMsAccessToken(req, res);
+        const unreadUrl = "https://graph.microsoft.com/v1.0/me/messages?$filter=parentFolderId eq 'Inbox' and inferenceClassification eq 'focused' and isRead eq false&$count=true&$top=1";
+        const totalUrl = "https://graph.microsoft.com/v1.0/me/messages?$filter=parentFolderId eq 'Inbox' and inferenceClassification eq 'focused'&$count=true&$top=1";
+        const [unreadResp, totalResp] = await Promise.all([
+          httpGet(unreadUrl, token2, { 'ConsistencyLevel': 'eventual' }),
+          httpGet(totalUrl, token2, { 'ConsistencyLevel': 'eventual' })
+        ]);
+        const [unreadJson, totalJson] = await Promise.all([
+          readJsonSafe(unreadResp),
+          readJsonSafe(totalResp)
+        ]);
+        if (unreadResp.ok && totalResp.ok) {
+          const stats = { unread: unreadJson['@odata.count'] || 0, total: totalJson['@odata.count'] || 0 };
+          await emailCache.setUserStats(userId, 'outlook', stats);
+          broadcastToUser(userId, { type: 'unread_count_updated', unread: stats.unread, total: stats.total });
+        }
+      } catch (_) {}
+    });
     try {
       const userId = String(req.auth?.sub);
       await emailCache.invalidateOnAction(userId, 'outlook', 'mark_read', ids);
@@ -334,29 +347,40 @@ router.post('/outlook/mark-unread', requireAuth, async (req, res) => {
         ok += 1;
       } catch (_) {}
     }
+    // Invalidate stats cache and update Redis-backed stats immediately with a delta
     try {
       const userId = String(req.auth?.sub);
       cache.del(`inbox:stats:outlook:${userId}`);
-      const token2 = await ensureMsAccessToken(req, res);
-      // Get focused/primary email counts for accurate stats
-      const unreadUrl = "https://graph.microsoft.com/v1.0/me/messages?$filter=parentFolderId eq 'Inbox' and inferenceClassification eq 'focused' and isRead eq false&$count=true&$top=1";
-      const totalUrl = "https://graph.microsoft.com/v1.0/me/messages?$filter=parentFolderId eq 'Inbox' and inferenceClassification eq 'focused'&$count=true&$top=1";
-      const [unreadResp, totalResp] = await Promise.all([
-        httpGet(unreadUrl, token2, { 'ConsistencyLevel': 'eventual' }),
-        httpGet(totalUrl, token2, { 'ConsistencyLevel': 'eventual' })
-      ]);
-      const [unreadJson, totalJson] = await Promise.all([
-        readJsonSafe(unreadResp),
-        readJsonSafe(totalResp)
-      ]);
-      if (unreadResp.ok && totalResp.ok) {
-        broadcastToUser(userId, {
-          type: 'unread_count_updated',
-          unread: unreadJson['@odata.count'] || 0,
-          total: totalJson['@odata.count'] || 0
-        });
+      const cur = (await emailCache.getUserStats(userId, 'outlook')) || null;
+      if (cur) {
+        const next = { ...cur, unread: Math.max(0, (cur.unread || 0) + ids.length) };
+        await emailCache.setUserStats(userId, 'outlook', next);
+        broadcastToUser(userId, { type: 'unread_count_updated', unread: next.unread, total: next.total });
       }
     } catch (_) {}
+
+    // Background recount from Graph for accuracy, then refresh Redis stats and broadcast
+    setImmediate(async () => {
+      try {
+        const userId = String(req.auth?.sub);
+        const token2 = await ensureMsAccessToken(req, res);
+        const unreadUrl = "https://graph.microsoft.com/v1.0/me/messages?$filter=parentFolderId eq 'Inbox' and inferenceClassification eq 'focused' and isRead eq false&$count=true&$top=1";
+        const totalUrl = "https://graph.microsoft.com/v1.0/me/messages?$filter=parentFolderId eq 'Inbox' and inferenceClassification eq 'focused'&$count=true&$top=1";
+        const [unreadResp, totalResp] = await Promise.all([
+          httpGet(unreadUrl, token2, { 'ConsistencyLevel': 'eventual' }),
+          httpGet(totalUrl, token2, { 'ConsistencyLevel': 'eventual' })
+        ]);
+        const [unreadJson, totalJson] = await Promise.all([
+          readJsonSafe(unreadResp),
+          readJsonSafe(totalResp)
+        ]);
+        if (unreadResp.ok && totalResp.ok) {
+          const stats = { unread: unreadJson['@odata.count'] || 0, total: totalJson['@odata.count'] || 0 };
+          await emailCache.setUserStats(userId, 'outlook', stats);
+          broadcastToUser(userId, { type: 'unread_count_updated', unread: stats.unread, total: stats.total });
+        }
+      } catch (_) {}
+    });
     try {
       const userId = String(req.auth?.sub);
       await emailCache.invalidateOnAction(userId, 'outlook', 'mark_unread', ids);
