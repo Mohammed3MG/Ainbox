@@ -62,3 +62,34 @@ async function wrap(key, ttlMs, loader) {
 }
 
 module.exports = { get, set, del, wrap };
+
+// Add pattern deletion support for both Redis and in-memory cache
+async function delPattern(pattern) {
+  // Redis path: use scanIterator to match and delete keys
+  if (redisEnabled && redis) {
+    try {
+      const iter = redis.scanIterator({ MATCH: pattern, COUNT: 100 });
+      for await (const key of iter) {
+        try { await redis.del(key); } catch (_) {}
+      }
+      return;
+    } catch (_) { /* fall through to in-memory */ }
+  }
+  // In-memory path: delete keys matching simple glob pattern (*)
+  const regex = globToRegExp(pattern);
+  for (const key of store.keys()) {
+    if (regex.test(key)) {
+      store.delete(key);
+    }
+  }
+}
+
+function globToRegExp(glob) {
+  const escaped = String(glob)
+    .replace(/[.+^${}()|\[\]\\]/g, '\\$&')
+    .replace(/\*/g, '.*')
+    .replace(/\?/g, '.');
+  return new RegExp(`^${escaped}$`);
+}
+
+module.exports.delPattern = delPattern;

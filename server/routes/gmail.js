@@ -251,9 +251,10 @@ router.post('/gmail/mark-read', requireAuth, async (req, res) => {
         });
       } catch (_) {}
     }
-    // Invalidate cache after marking emails as read (lists/threads)
+    // Invalidate cache after marking emails as read (lists/threads) and clear stats cache
     {
       const userId = String(req.auth?.sub);
+      try { await cache.del(`inbox:stats:gmail:${userId}`); } catch (_) {}
       await emailCache.invalidateOnAction(userId, 'gmail', 'mark_read', ids);
     }
 
@@ -334,9 +335,10 @@ router.post('/gmail/mark-unread', requireAuth, async (req, res) => {
         });
       } catch (_) {}
     }
-    // Invalidate cache after marking emails as unread (lists/threads)
+    // Invalidate cache after marking emails as unread (lists/threads) and clear stats cache
     {
       const userId = String(req.auth?.sub);
+      try { await cache.del(`inbox:stats:gmail:${userId}`); } catch (_) {}
       await emailCache.invalidateOnAction(userId, 'gmail', 'mark_unread', ids);
     }
 
@@ -385,8 +387,9 @@ router.post('/gmail/trash', requireAuth, async (req, res) => {
         ok += 1;
       } catch (_) {}
     }
-    // Invalidate cache for lists/threads and broadcast row deletion
+    // Invalidate cache for lists/threads and clear stats cache; broadcast row deletion
     try {
+      try { await cache.del(`inbox:stats:gmail:${uid}`); } catch (_) {}
       await emailCache.invalidateOnAction(uid, 'gmail', 'delete', ids);
       broadcastToUser(uid, { type: 'email_deleted', emailId: ids[0] });
     } catch (_) {}
@@ -444,12 +447,25 @@ router.get('/threads', requireAuth, async (req, res) => {
     // Create cache key based on request parameters
     const cacheKey = `${maxResults}:${pageToken || 'first'}:${unread}:${q || 'all'}`;
 
-    // Try to get from cache first (skip cache for search queries for now)
+    // Try to get from cache first (skip cache for search queries)
     if (!q) {
       const cached = await emailCache.getInbox(userId, 'gmail', 'inbox', cacheKey);
       if (cached) {
         console.log('📦 Serving inbox from cache');
-        return res.json(cached);
+        // Apply local overrides to cached threads so UI reflects instant state
+        const adjustedThreads = await Promise.all((cached.threads || []).map(async (item) => {
+          if (!item) return null;
+          try {
+            const ov = await readState.getOverride(userId, 'gmail', item.threadId);
+            if (ov === 'read') return { ...item, isUnread: false };
+            if (ov === 'unread') return { ...item, isUnread: true };
+            return item;
+          } catch (_) {
+            return item;
+          }
+        }));
+        const adjusted = { ...cached, threads: adjustedThreads.filter(Boolean) };
+        return res.json(adjusted);
       }
     }
 

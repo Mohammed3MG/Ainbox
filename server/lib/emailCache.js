@@ -180,9 +180,11 @@ class EmailCache {
   }
 
   async deletePattern(pattern) {
-    // This is a simplified version - in production you'd want to use Redis SCAN
-    // For now, we'll track keys manually or use a more sophisticated approach
-    console.log(`🗑️ Pattern delete requested: ${pattern}`);
+    try {
+      await cache.delPattern(pattern);
+    } catch (e) {
+      console.warn('Pattern delete failed:', e?.message);
+    }
   }
 
   // Health check and stats
