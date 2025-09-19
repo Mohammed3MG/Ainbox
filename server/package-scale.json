@@ -1,0 +1,69 @@
+{
+  "name": "ainbox-server-scaled",
+  "version": "1.0.0",
+  "description": "Ainbox email server optimized for 400-1000 users",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "dev": "nodemon index.js",
+    "start": "node index.js",
+    "monitor": "node --inspect index.js",
+    "cluster": "node --max-old-space-size=2048 index.js"
+  },
+  "dependencies": {
+    "imapflow": "^1.0.164",
+    "node-fetch": "^2.6.9",
+    "nodemailer": "^6.9.14",
+    "bcrypt": "^6.0.0",
+    "cookie-parser": "^1.4.7",
+    "cors": "^2.8.5",
+    "dotenv": "^17.2.2",
+    "express": "^5.1.0",
+    "express-session": "^1.18.2",
+    "googleapis": "^159.0.0",
+    "helmet": "^8.1.0",
+    "jsonwebtoken": "^9.0.2",
+    "nodemon": "^3.1.10",
+    "passport": "^0.7.0",
+    "passport-google-oauth20": "^2.0.0",
+    "pg": "^8.16.3",
+    "uuid": "^12.0.0",
+    "redis": "^4.7.0",
+    "node-cache": "^5.1.2",
+    "express-rate-limit": "^7.1.5",
+    "compression": "^1.7.4",
+    "morgan": "^1.10.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.10"
+  },
+  "keywords": [
+    "email",
+    "gmail",
+    "outlook",
+    "scalable",
+    "redis",
+    "queue"
+  ],
+  "author": "Ainbox Team",
+  "license": "MIT",
+  "engines": {
+    "node": ">=16.0.0"
+  },
+  "performance": {
+    "notes": "Optimized for 400-1000 concurrent users with:",
+    "features": [
+      "Connection pooling with max 200 SSE connections",
+      "Multi-layer caching (Memory + Redis)",
+      "Background job queue system",
+      "Rate limiting per user and globally",
+      "Smart cache invalidation",
+      "Real-time monitoring"
+    ],
+    "requirements": {
+      "memory": "2GB minimum, 4GB recommended",
+      "redis": "Required for L2 cache and rate limiting",
+      "cpu": "2+ cores recommended"
+    }
+  }
+}

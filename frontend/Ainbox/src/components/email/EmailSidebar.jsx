@@ -35,9 +35,6 @@ const labels = [
 export default function EmailSidebar({ activeFolder, onFolderChange, onCompose, inboxUnread = 0, spamUnread = 0 }) {
   const [storageUsed] = useState(33)
 
-  // Debug log for unread count
-  console.log('EmailSidebar: inboxUnread =', inboxUnread)
-
   return (
     <div className="w-50 bg-white border-r border-gray-200 flex flex-col h-screen overflow-hidden">
       {/* Logo */}
@@ -50,10 +47,6 @@ export default function EmailSidebar({ activeFolder, onFolderChange, onCompose, 
           const isActive = activeFolder === item.id
           const dynamicCount = item.id === 'inbox' ? inboxUnread : item.id === 'spam' ? spamUnread : item.count
 
-          // Debug log for each item
-          if (item.id === 'inbox') {
-            console.log('Inbox item - inboxUnread:', inboxUnread, 'dynamicCount:', dynamicCount)
-          }
 
           return (
             <button

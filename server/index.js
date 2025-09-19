@@ -18,10 +18,28 @@ const cors = require('cors');
 const cookieParser = require('cookie-parser');
 const apiV1 = require('./routes/api_v1');
 const aiRoutes = require('./routes/ai');
+const syncRoutes = require('./routes/sync');
+
+// Import new scaling components (optional - fallback if not available)
+let connectionManager, smartCache, jobQueue, rateLimiter;
+try {
+  connectionManager = require('./lib/connectionManager');
+  smartCache = require('./lib/smartCache');
+  jobQueue = require('./lib/jobQueue');
+  rateLimiter = require('./lib/rateLimiter');
+  console.log('✅ Scaling components loaded');
+} catch (error) {
+  console.warn('⚠️  Scaling components not available, running in basic mode:', error.message);
+}
+// const emailStatusRoutes = require('./routes/emailStatus');
 
 const app = express();
 const { runMigrations } = require('./lib/migrate');
+const { requireAuth } = require('./middleware/auth');
 app.use(helmet());
+// Trust proxy for accurate IP addresses and rate limiting
+app.set('trust proxy', 1);
+
 // Serve static assets (for CSP-compliant scripts like /other.js)
 app.use(express.static('public'));
 app.use(cors({
@@ -31,6 +49,14 @@ app.use(cors({
 // Increase JSON limit to allow base64 attachments in compose API (tune per needs)
 app.use(express.json({ limit: '35mb' }));
 app.use(cookieParser());
+
+// Add rate limiting middleware for scaling (if available)
+if (rateLimiter) {
+  app.use('/gmail/', rateLimiter.createMiddleware('gmail'));
+  app.use('/outlook/', rateLimiter.createMiddleware('outlook'));
+  app.use('/api/', rateLimiter.createMiddleware('api'));
+}
+
 app.use(passport.initialize());
 // Configure Google OAuth strategy when env is present
 const hasGoogle = process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET && process.env.GOOGLE_CALLBACK_URL;
@@ -52,11 +78,32 @@ app.use(mailRouter);
 app.use(otherRouter);
 app.use('/api/v1', apiV1);
 app.use(aiRoutes);
+app.use('/sync', syncRoutes);
+// app.use('/api/emails', emailStatusRoutes);
 
 
-// Health endpoints
+// Enhanced health and monitoring endpoints
 app.get('/healthz', (req, res) => res.status(200).send('ok'));
 app.get('/readyz', (req, res) => res.status(200).send('ready'));
+
+// System statistics endpoint for monitoring
+app.get('/stats', (req, res) => {
+  const stats = {
+    uptime: process.uptime(),
+    memory: process.memoryUsage(),
+    timestamp: new Date().toISOString()
+  };
+
+  // Add scaling stats if available
+  if (connectionManager) stats.connections = connectionManager.getStats();
+  if (smartCache) stats.cache = smartCache.getStats();
+  if (jobQueue) stats.jobs = jobQueue.getStats();
+  if (rateLimiter) stats.rateLimits = rateLimiter.getStats();
+
+  res.json(stats);
+});
+
+// SSE endpoint is handled by /api/v1 router (routes/api_v1.js)
 
 // Public home
 app.get('/', redirectIfAuthenticated, (req, res) => {
@@ -147,16 +194,70 @@ async function startHttps(app, ssl) {
   console.warn(`HTTPS disabled: no available ports from ${base} to ${base + maxTries - 1}`);
 }
 
-// Run minimal migrations and start servers
+// Enhanced startup sequence
 (async () => {
   try {
+    console.log('🚀 Starting Ainbox server...');
+
+    // Initialize systems
+    console.log('📊 Initializing monitoring systems...');
+
+    // Run migrations
     await runMigrations();
     console.log('🛠️  DB migrations applied.');
+
+    // Start servers
+    await startHttp(app);
+    if (sslOptions) await startHttps(app, sslOptions);
+
+    // Log system status
+    console.log('📊 System Status:');
+    if (connectionManager) {
+      const connStats = connectionManager.getStats();
+      console.log(`   - Max Connections: ${connStats.maxConnections}`);
+    }
+    if (smartCache) {
+      const cacheStats = smartCache.getStats();
+      console.log(`   - Cache Hit Rate: ${cacheStats.overall?.hitRate || 0}%`);
+    }
+    if (jobQueue) {
+      const jobStats = jobQueue.getStats();
+      console.log(`   - Background Workers: ${jobStats.workers.totalActive}`);
+    }
+
+    // if (connectionManager && smartCache && jobQueue && rateLimiter) {
+    //   console.log('✅ Ainbox server ready for 400-1000 users!');
+    // } else {
+    //   console.log('✅ Ainbox server ready (basic mode)');
+    // }
+
+    // Start periodic health logging (only if scaling components available)
+    if (connectionManager && smartCache && jobQueue) {
+      setInterval(() => {
+        const currentStats = {
+          activeConnections: connectionManager.getStats().activeConnections,
+          cacheHitRate: smartCache.getStats().overall?.hitRate || 0,
+          queueSize: jobQueue.getStats().queues.total,
+          memoryUsage: Math.round(process.memoryUsage().heapUsed / 1024 / 1024)
+        };
+
+        console.log(`📈 [${new Date().toISOString()}] Active: ${currentStats.activeConnections} conn, ${currentStats.cacheHitRate}% cache hit, ${currentStats.queueSize} jobs queued, ${currentStats.memoryUsage}MB RAM`);
+      }, 300000); // Every 5 minutes
+    }
+
   } catch (e) {
-    console.error('Migration failed:', e);
+    console.error('❌ Startup failed:', e);
+    process.exit(1);
   }
-
-  await startHttp(app);
-
-  if (sslOptions) await startHttps(app, sslOptions);
 })();
+
+// Graceful shutdown handling
+process.on('SIGTERM', () => {
+  console.log('🔄 SIGTERM received, shutting down gracefully...');
+  process.exit(0);
+});
+
+process.on('SIGINT', () => {
+  console.log('🔄 SIGINT received, shutting down gracefully...');
+  process.exit(0);
+});

@@ -14,7 +14,8 @@ import {
   formatEmailForDisplay,
   withErrorHandling,
   getInboxStats,
-  getSpamStats
+  getSpamStats,
+  clearEmailCache
 } from '../services/emailApi'
 
 export function useEmail() {
@@ -205,10 +206,11 @@ export function useEmail() {
 
     console.log('performEmailAction called:', action, ids)
 
-    // Update local state optimistically FIRST
+    // Update local state optimistically FIRST (match by id, threadId, messageId)
     let unreadDelta = 0
     setEmails(prev => prev.map(email => {
-      if (ids.includes(email.id)) {
+      const matches = ids.includes(email.id) || ids.includes(email.threadId) || ids.includes(email.messageId)
+      if (matches) {
         switch (action) {
           case 'read':
             console.log('Updating email to read:', email.id)
@@ -250,32 +252,32 @@ export function useEmail() {
     try {
       switch (action) {
         case 'read':
-          markEmailAsRead(ids).catch(error => {
+          markEmailAsRead(ids).then(() => clearEmailCache()).catch(error => {
             console.error('Backend sync failed for read:', error)
           })
           break
         case 'unread':
-          markEmailAsUnread(ids).catch(error => {
+          markEmailAsUnread(ids).then(() => clearEmailCache()).catch(error => {
             console.error('Backend sync failed for unread:', error)
           })
           break
         case 'star':
-          starEmail(ids).catch(error => {
+          starEmail(ids).then(() => {}).catch(error => {
             console.error('Backend sync failed for star:', error)
           })
           break
         case 'unstar':
-          unstarEmail(ids).catch(error => {
+          unstarEmail(ids).then(() => {}).catch(error => {
             console.error('Backend sync failed for unstar:', error)
           })
           break
         case 'archive':
-          archiveEmails(ids).catch(error => {
+          archiveEmails(ids).then(() => clearEmailCache()).catch(error => {
             console.error('Backend sync failed for archive:', error)
           })
           break
         case 'delete':
-          deleteEmails(ids).catch(error => {
+          deleteEmails(ids).then(() => clearEmailCache()).catch(error => {
             console.error('Backend sync failed for delete:', error)
           })
           break
@@ -325,13 +327,23 @@ export function useEmail() {
           if (typeof update.unread === 'number') setUnreadCount(update.unread)
           if (typeof update.total === 'number') setTotal(update.total)
           break
-        case 'email_updated':
-          setEmails(prev => prev.map(email =>
-            email.id === update.email.id
-              ? formatEmailForDisplay(update.email)
-              : email
-          ))
+        case 'email_updated': {
+          const up = update.email || {}
+          const upId = up.id
+          setEmails(prev => prev.map(email => {
+            const match = upId && (
+              email.id === upId ||
+              email.threadId === upId ||
+              email.messageId === upId ||
+              email.conversationId === upId
+            )
+            if (!match) return email
+            const next = { ...email }
+            if (typeof up.isRead === 'boolean') next.isRead = up.isRead
+            return next
+          }))
           break
+        }
         case 'email_deleted':
           setEmails(prev => prev.filter(email => email.id !== update.emailId))
           setTotal(prev => Math.max(0, prev - 1))
@@ -371,6 +383,16 @@ export function useEmail() {
         case 'e':
           if (selectedEmails.size > 0) {
             performEmailAction('archive', Array.from(selectedEmails))
+          }
+          break
+        case 'r':
+          if (selectedEmails.size > 0) {
+            performEmailAction('read', Array.from(selectedEmails))
+          }
+          break
+        case 'U':
+          if (selectedEmails.size > 0) {
+            performEmailAction('unread', Array.from(selectedEmails))
           }
           break
         case 'Delete':

@@ -72,7 +72,7 @@ Keep it comprehensive but under 200 words. Use emojis and bullet points for clar
   ];
 }
 
-function suggestRepliesPrompt(subject, lastMessage, { tone = 'neutral', fullThread = [], currentUserEmail = '' } = {}) {
+function suggestRepliesPrompt(subject, lastMessage, { tone = 'neutral', fullThread = [], currentUserEmail = '', replyToSender = '', replyToEmail = '' } = {}) {
   const clip = (s, n=3000) => (s || '').slice(0, n);
 
   // Analyze the conversation context
@@ -113,18 +113,27 @@ function suggestRepliesPrompt(subject, lastMessage, { tone = 'neutral', fullThre
   const urgencyLevel = hasDeadline ? 'high' : 'normal';
   const relationshipTone = tone === 'formal' ? 'professional' : 'collaborative';
 
+  // Extract first name from sender for personal addressing
+  const senderFirstName = replyToSender ? replyToSender.split(' ')[0].replace(/[^\w]/g, '') : 'there';
+  const replyingFrom = currentUserEmail ? currentUserEmail.split('@')[0] : 'User';
+
   return [
     {
       role: 'system',
-      content: `You are an expert email assistant helping users craft perfect replies. You understand business communication, relationship dynamics, and professional etiquette. Generate replies that sound natural, address the sender's needs, and maintain appropriate tone.`
+      content: `You are an expert email assistant helping users craft perfect replies. You understand business communication, relationship dynamics, and professional etiquette. Generate replies that sound natural, address the sender's needs, and maintain appropriate tone. IMPORTANT: The user is replying TO the sender, not from the sender. Address the sender by name and write from the perspective of the replying user.`
     },
     {
       role: 'user',
       content: `📧 **Smart Reply Generation Request**
 
-**Context Analysis:**
+**Reply Context:**
+- User Replying: ${currentUserEmail || replyingFrom}
+- Replying TO: ${replyToSender || 'Unknown sender'} (${replyToEmail || 'unknown email'})
+- Sender's First Name: ${senderFirstName}
 - Subject: ${subject || '(no subject)'}
-- Email Category: ${category.toUpperCase()}
+
+**Email Analysis:**
+- Category: ${category.toUpperCase()}
 - Urgency: ${urgencyLevel}
 - Contains Question: ${isQuestion ? 'Yes' : 'No'}
 - Has Request: ${hasRequest ? 'Yes' : 'No'}
@@ -133,35 +142,40 @@ function suggestRepliesPrompt(subject, lastMessage, { tone = 'neutral', fullThre
 **Conversation Context:**
 ${threadContext || 'Single message (no prior context)'}
 
-**Latest Message to Reply To:**
-From: ${lastMessage?.from || 'Unknown sender'}
+**Latest Message from ${replyToSender || 'sender'} to Reply To:**
 Content: ${clip(lastContent)}
 
 **Reply Strategy:** ${replyHints.join(', ')}
 **Desired Tone:** ${relationshipTone}
 
-**Task:** Generate 3 contextually appropriate reply options:
+**Task:** Generate 3 contextually appropriate reply options that address ${senderFirstName}:
 
 **Option 1: Quick & Professional** (1-2 sentences, direct response)
+- Start with "Hi ${senderFirstName}," or "Dear ${senderFirstName},"
 - Address their main point immediately
 - Professional but efficient
 
 **Option 2: Detailed & Thorough** (3-4 sentences, comprehensive)
+- Start with "Hi ${senderFirstName}," or appropriate greeting
 - Address all aspects of their message
 - Provide additional context/details
 - Proactive communication
 
 **Option 3: Collaborative & Friendly** (2-3 sentences, relationship-focused)
+- Start with "Hi ${senderFirstName}," or warm greeting
 - Warmer tone while remaining professional
 - Include offer for further assistance
 - Build relationship
 
-Each reply should:
-✅ Directly address their message
+🎯 **CRITICAL REQUIREMENTS:**
+✅ ALWAYS start with greeting ${senderFirstName} by name
+✅ Write from YOUR perspective replying TO ${senderFirstName}
+✅ Directly address THEIR message/request
 ✅ Sound like a real person (not AI-generated)
 ✅ Be actionable and clear
 ✅ Match the relationship tone
 ✅ Include appropriate closing
+✅ DO NOT write as if you ARE ${senderFirstName} - you are REPLYING to them
 
 Format each option clearly with "## Option 1", "## Option 2", "## Option 3" headers.`
     }

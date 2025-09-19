@@ -4,12 +4,13 @@ import { Routes, Route } from 'react-router-dom'
 import Terms from './pages/Terms'
 import Dashboard from './pages/Dashboard'
 import ProtectedRoute from './components/routing/ProtectedRoute'
+import ErrorBoundary from './components/routing/ErrorBoundary'
 
 function App() {
 
 
   return (
-    <>
+    <ErrorBoundary>
       {/* <ThemeChange> </ThemeChange> */}
       <Routes>
         <Route path="/" element={<Home />} />
@@ -25,7 +26,7 @@ function App() {
         } />
         <Route path="*" element={<Home />} />
       </Routes>
-    </>
+    </ErrorBoundary>
   )
 }
 

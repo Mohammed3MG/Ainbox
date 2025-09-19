@@ -1,4 +1,5 @@
 import { apiFetch } from './apiClient'
+import { API_BASE_URL } from '../config'
 
 // Get current user's provider from session
 let userProvider = null
@@ -62,6 +63,15 @@ function setCachedData(key, data) {
     data,
     timestamp: Date.now()
   })
+}
+
+// Clear local email cache (used after actions that change mailbox state)
+export function clearEmailCache() {
+  try {
+    emailCache.clear()
+  } catch (_) {
+    // no-op
+  }
 }
 
 // Email folder management
@@ -707,9 +717,14 @@ export async function getConnectedAccounts() {
 
 // Real-time updates via WebSocket or Server-Sent Events
 export function subscribeToEmailUpdates(onUpdate) {
-  // This would typically use WebSocket or Server-Sent Events
-  // For now, we'll use polling as fallback
-  const eventSource = new EventSource('/api/v1/emails/stream')
+  // Use Server-Sent Events (SSE) with absolute URL so it works in dev
+  // and include credentials for auth-protected stream
+  let streamUrl = '/api/v1/emails/stream'
+  if (API_BASE_URL) {
+    try { streamUrl = new URL('/api/v1/emails/stream', API_BASE_URL).toString() } catch (_) {}
+  }
+
+  const eventSource = new EventSource(streamUrl, { withCredentials: true })
 
   eventSource.onmessage = (event) => {
     try {

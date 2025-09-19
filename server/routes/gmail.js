@@ -3,7 +3,10 @@ const { google } = require('googleapis');
 const { requireAuth } = require('../middleware/auth');
 const { getGoogleOAuthClientFromCookies } = require('../utils/googleClient');
 const cache = require('../lib/cache');
+const emailCache = require('../lib/emailCache');
 const { broadcastToUser } = require('../lib/sse');
+const gmailSync = require('../lib/gmailSync');
+const readState = require('../lib/readState');
 
 const router = express.Router();
 
@@ -36,8 +39,8 @@ async function extractMessage(gmail, message, opts = {}) {
     const disp = (part.headers || []).find(h => h.name.toLowerCase() === 'content-disposition')?.value || '';
     const cid = (part.headers || []).find(h => h.name.toLowerCase() === 'content-id')?.value;
 
-    // Handle inline text/html
-    if (mime === 'text/plain' && body.data) {
+    // Handle inline text/html - prioritize HTML content for better formatting
+    if (mime === 'text/plain' && body.data && !text) {
       text = base64UrlToBuffer(body.data).toString('utf-8');
     } else if (mime === 'text/html' && body.data) {
       html = base64UrlToBuffer(body.data).toString('utf-8');
@@ -85,6 +88,45 @@ async function extractMessage(gmail, message, opts = {}) {
     html,
     attachments,
   };
+}
+
+// Helper: compute Primary Inbox counts (total + unread) using Gmail API
+async function computePrimaryInboxCounts(oauth2Client) {
+  const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
+
+  // Get actual thread count by fetching more threads and using precise counting
+  async function getActualCount(q, maxToCheck = 1000) {
+    try {
+      // For accurate counts, we need to actually fetch threads rather than rely on estimates
+      const resp = await gmail.users.threads.list({
+        userId: 'me',
+        maxResults: maxToCheck,
+        labelIds: ['INBOX'],
+        q,
+        fields: 'threads(id),nextPageToken,resultSizeEstimate'
+      });
+
+      // If we got fewer threads than requested, we have the exact count
+      const threadCount = (resp.data?.threads || []).length;
+      if (threadCount < maxToCheck && !resp.data?.nextPageToken) {
+        return threadCount;
+      }
+
+      // If there are more threads, fall back to estimate but log a warning
+      const estimate = Number.isFinite(resp.data?.resultSizeEstimate) ? resp.data.resultSizeEstimate : threadCount;
+      console.log(`📊 Using estimate for large mailbox: ${estimate} (checked ${threadCount} threads)`);
+      return estimate;
+    } catch (error) {
+      console.error('Failed to get thread count:', error.message);
+      return 0;
+    }
+  }
+
+  const total = await getActualCount('category:primary');
+  const unread = await getActualCount('category:primary is:unread');
+
+  console.log(`📊 Gmail Primary stats: ${unread} unread / ${total} total`);
+  return { total, unread };
 }
 
 router.get('/emails', requireAuth, async (req, res) => {
@@ -158,21 +200,18 @@ router.get('/gmail/inbox-stats', requireAuth, async (req, res) => {
       const key = `inbox:stats:gmail:${userId}`;
       const value = await cache.wrap(key, 45_000, async () => {
         const oauth2Client = await getGoogleOAuthClientFromCookies(req);
-        const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
-        async function estimate(q) {
-          const resp = await gmail.users.threads.list({
-            userId: 'me',
-            maxResults: 1,
-            labelIds: ['INBOX'],
-            q,
-            fields: 'resultSizeEstimate'
-          });
-          return Number.isFinite(resp.data?.resultSizeEstimate) ? resp.data.resultSizeEstimate : 0;
-        }
-        const total = await estimate('category:primary');
-        const unread = await estimate('category:primary is:unread');
-        return { total, unread };
+        return computePrimaryInboxCounts(oauth2Client);
       });
+
+      // Auto-start Gmail sync for this user when they access Gmail stats
+      const syncStatus = gmailSync.getSyncStatus(userId);
+      if (!syncStatus.active) {
+        console.log(`🚀 Auto-starting Gmail sync for user ${userId}`);
+        gmailSync.startSyncForUser(userId, req.cookies).catch(err => {
+          console.error('Auto-start Gmail sync failed:', err.message);
+        });
+      }
+
       return res.json(value);
     } catch (err) {
       console.error(err);
@@ -190,27 +229,38 @@ router.post('/gmail/mark-read', requireAuth, async (req, res) => {
     let ok = 0;
     for (const id of ids) {
       try {
-        // Remove UNREAD label across the whole thread
-        await gmail.users.threads.modify({
-          userId: 'me',
-          id,
-          requestBody: { removeLabelIds: ['UNREAD'] }
-        });
+        const uid = String(req.auth?.sub);
+        await readState.setOverride(uid, 'gmail', id, 'read');
+        await readState.removeUnread(uid, 'gmail', id);
+        // Notify UI instantly for the row; counts broadcast later using Primary-only stats
+        try {
+          broadcastToUser(uid, { type: 'email_updated', email: { id, isRead: true } });
+        } catch (_) {}
         ok += 1;
+        // background sync to provider
+        setImmediate(async () => {
+          try {
+            await gmail.users.threads.modify({ userId: 'me', id, requestBody: { removeLabelIds: ['UNREAD'] } });
+            await readState.clearOverride(uid, 'gmail', id);
+          } catch (_) {}
+        });
       } catch (_) {}
     }
-    // Invalidate cache, broadcast updated counts
+    // Invalidate cache, broadcast updated counts (Primary only)
     try {
       const userId = String(req.auth?.sub);
       cache.del(`inbox:stats:gmail:${userId}`);
       const oauth2Client2 = await getGoogleOAuthClientFromCookies(req);
-      const gmail2 = google.gmail({ version: 'v1', auth: oauth2Client2 });
-      const label = await gmail2.users.labels.get({ userId: 'me', id: 'INBOX' });
-      const d = label.data || {};
-      const threadsTotal = Number.isFinite(d.threadsTotal) ? d.threadsTotal : d.messagesTotal || 0;
-      const threadsUnread = Number.isFinite(d.threadsUnread) ? d.threadsUnread : d.messagesUnread || 0;
-      broadcastToUser(userId, { type: 'unread_count_updated', unread: threadsUnread, total: threadsTotal });
+      const stats = await computePrimaryInboxCounts(oauth2Client2);
+      broadcastToUser(userId, { type: 'unread_count_updated', unread: stats.unread, total: stats.total });
     } catch (_) {}
+
+    // Invalidate cache after marking emails as read
+    {
+      const userId = String(req.auth?.sub);
+      await emailCache.invalidateOnAction(userId, 'gmail', 'mark_read', ids);
+    }
+
     return res.json({ ok, total: ids.length });
   } catch (e) {
     console.error('gmail/mark-read failed:', e);
@@ -248,29 +298,67 @@ router.post('/gmail/mark-unread', requireAuth, async (req, res) => {
     let ok = 0;
     for (const id of ids) {
       try {
-        await gmail.users.threads.modify({
-          userId: 'me',
-          id,
-          requestBody: { addLabelIds: ['UNREAD'] }
-        });
+        const uid = String(req.auth?.sub);
+        await readState.setOverride(uid, 'gmail', id, 'unread');
+        await readState.addUnread(uid, 'gmail', id);
+        try {
+          broadcastToUser(uid, { type: 'email_updated', email: { id, isRead: false } });
+        } catch (_) {}
         ok += 1;
+        setImmediate(async () => {
+          try {
+            await gmail.users.threads.modify({ userId: 'me', id, requestBody: { addLabelIds: ['UNREAD'] } });
+            await readState.clearOverride(uid, 'gmail', id);
+          } catch (_) {}
+        });
       } catch (_) {}
     }
     try {
       const userId = String(req.auth?.sub);
       cache.del(`inbox:stats:gmail:${userId}`);
       const oauth2Client2 = await getGoogleOAuthClientFromCookies(req);
-      const gmail2 = google.gmail({ version: 'v1', auth: oauth2Client2 });
-      const label = await gmail2.users.labels.get({ userId: 'me', id: 'INBOX' });
-      const d = label.data || {};
-      const threadsTotal = Number.isFinite(d.threadsTotal) ? d.threadsTotal : d.messagesTotal || 0;
-      const threadsUnread = Number.isFinite(d.threadsUnread) ? d.threadsUnread : d.messagesUnread || 0;
-      broadcastToUser(String(req.auth?.sub), { type: 'unread_count_updated', unread: threadsUnread, total: threadsTotal });
+      const stats = await computePrimaryInboxCounts(oauth2Client2);
+      broadcastToUser(userId, { type: 'unread_count_updated', unread: stats.unread, total: stats.total });
     } catch (_) {}
+
+    // Invalidate cache after marking emails as unread
+    const userId = String(req.auth?.sub);
+    await emailCache.invalidateOnAction(userId, 'gmail', 'mark_unread', ids);
+
     return res.json({ ok, total: ids.length });
   } catch (e) {
     console.error('gmail/mark-unread failed:', e);
     return res.status(401).json({ error: 'Unable to mark Gmail threads as unread' });
+  }
+});
+
+// Move Gmail threads to Trash (delete)
+router.post('/gmail/trash', requireAuth, async (req, res) => {
+  try {
+    const ids = Array.isArray(req.body?.ids) ? req.body.ids : [];
+    if (!ids.length) return res.status(400).json({ error: 'ids required' });
+    const oauth2Client = await getGoogleOAuthClientFromCookies(req);
+    const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
+    const uid = String(req.auth?.sub);
+    let ok = 0;
+    for (const id of ids) {
+      try {
+        await gmail.users.threads.trash({ userId: 'me', id });
+        await readState.removeUnread(uid, 'gmail', id);
+        ok += 1;
+      } catch (_) {}
+    }
+    try {
+      await emailCache.invalidateOnAction(uid, 'gmail', 'delete', ids);
+      broadcastToUser(uid, { type: 'email_deleted', emailId: ids[0] });
+      const oauth2Client2 = await getGoogleOAuthClientFromCookies(req);
+      const stats = await computePrimaryInboxCounts(oauth2Client2);
+      broadcastToUser(uid, { type: 'unread_count_updated', unread: stats.unread, total: stats.total });
+    } catch (_) {}
+    return res.json({ ok, total: ids.length });
+  } catch (e) {
+    console.error('gmail/trash failed:', e);
+    return res.status(401).json({ error: 'Unable to move to trash' });
   }
 });
 
@@ -293,38 +381,67 @@ async function mapWithLimit(items, limit, mapper) {
 // List INBOX threads: latest message metadata only
 router.get('/threads', requireAuth, async (req, res) => {
   try {
-    const oauth2Client = await getGoogleOAuthClientFromCookies(req);
-    const gmail = google.gmail({
-      version: 'v1', auth: oauth2Client
-    });
-
+    const userId = String(req.auth?.sub);
     const maxResults = Math.min(parseInt(req.query.maxResults || '20', 10), 50);
     const pageToken = req.query.pageToken || undefined;
     const unread = String(req.query.unread || 'false') === 'true';
     const q = req.query.q || undefined;
 
-    // Select label filter based on query
+    // Create cache key based on request parameters
+    const cacheKey = `${maxResults}:${pageToken || 'first'}:${unread}:${q || 'all'}`;
+
+    // Try to get from cache first (skip cache for search queries for now)
+    if (!q) {
+      const cached = await emailCache.getInbox(userId, 'gmail', 'inbox', cacheKey);
+      if (cached) {
+        console.log('📦 Serving inbox from cache');
+        return res.json(cached);
+      }
+    }
+
+    console.log('🔄 Fetching inbox from Gmail API');
+    const oauth2Client = await getGoogleOAuthClientFromCookies(req);
+    const gmail = google.gmail({
+      version: 'v1', auth: oauth2Client
+    });
+
+    // Select label filter and query based on folder
     let labelIds = [];
+    let queryParam = q || '';
     const qStr = (q || '').toLowerCase();
+
     if (qStr.includes('in:trash')) {
       labelIds = ['TRASH'];
     } else if (qStr.includes('in:spam')) {
       labelIds = ['SPAM'];
     } else if (qStr.includes('in:archive')) {
-      // archive => messages without INBOX; don't force a label filter here
+      // archive => messages without INBOX
       labelIds = [];
+      queryParam = queryParam + ' in:archive';
     } else {
-      // default Inbox Primary
-      labelIds = ['INBOX', 'CATEGORY_PERSONAL'];
+      // default Inbox Primary - use query parameter instead of CATEGORY_PERSONAL label
+      labelIds = ['INBOX'];
+      if (!q) {
+        queryParam = 'category:primary';
+      } else {
+        queryParam = q + ' category:primary';
+      }
     }
-    if (unread) labelIds.push('UNREAD');
+
+    if (unread) {
+      if (queryParam) {
+        queryParam += ' is:unread';
+      } else {
+        queryParam = 'is:unread';
+      }
+    }
 
     const listResp = await gmail.users.threads.list({
       userId: 'me',
       maxResults,
       labelIds: labelIds.length ? labelIds : undefined,
       pageToken,
-      q,
+      q: queryParam || undefined,
       // include resultSizeEstimate for totals
       fields: 'nextPageToken,threads/id,resultSizeEstimate'
     });
@@ -352,11 +469,28 @@ router.get('/threads', requireAuth, async (req, res) => {
       } : null;
     });
 
-    res.json({
+    // Apply local overrides (instant read/unread via Redis)
+    const adjusted = await Promise.all((details || []).map(async (item) => {
+      if (!item) return null;
+      const ov = await readState.getOverride(userId, 'gmail', item.threadId);
+      if (ov === 'read') item.isUnread = false;
+      if (ov === 'unread') item.isUnread = true;
+      return item;
+    }));
+
+    const response = {
       nextPageToken: listResp.data.nextPageToken || null,
-      threads: details.filter(Boolean),
+      threads: adjusted.filter(Boolean),
       total: typeof listResp.data.resultSizeEstimate === 'number' ? listResp.data.resultSizeEstimate : undefined
-    });
+    };
+
+    // Cache the response (skip search queries)
+    if (!q) {
+      await emailCache.setInbox(userId, 'gmail', 'inbox', cacheKey, response);
+      console.log('💾 Cached inbox response');
+    }
+
+    res.json(response);
   } catch (err) {
     console.error(err);
     res.status(401).json({ error: 'Unable to access Gmail. Reconnect Google.' });
@@ -423,7 +557,18 @@ router.get('/threads/sent', requireAuth, async (req, res) => {
 // Thread details with optional attachments
 router.get('/threads/:id', requireAuth, async (req, res) => {
   try {
-    const includeAttachments = String(req.query.includeAttachments || 'false') === 'true';
+    const userId = String(req.auth?.sub);
+    const threadId = req.params.id;
+    const includeAttachments = String(req.query.includeAttachments || 'true') === 'true';
+
+    // Try to get from cache first
+    const cached = await emailCache.getThread(userId, 'gmail', threadId);
+    if (cached) {
+      console.log('📦 Serving thread from cache');
+      return res.json(cached);
+    }
+
+    console.log('🔄 Fetching thread from Gmail API');
     const oauth2Client = await getGoogleOAuthClientFromCookies(req);
     const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
 
@@ -458,7 +603,13 @@ router.get('/threads/:id', requireAuth, async (req, res) => {
       out.push(parsed);
     }
 
-    res.json({ threadId: t.data.id, messages: out });
+    const response = { threadId: t.data.id, messages: out };
+
+    // Cache the thread response
+    await emailCache.setThread(userId, 'gmail', threadId, response);
+    console.log('💾 Cached thread response');
+
+    res.json(response);
   } catch (err) {
     console.error(err);
     res.status(401).json({ error: 'Unable to access Gmail. Reconnect Google.' });

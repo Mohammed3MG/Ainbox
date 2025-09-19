@@ -212,23 +212,17 @@ export default function EmailList({
           itemCount={filteredEmails.length}
           itemSize={92}
           width={'100%'}
-          onItemsRendered={({ visibleStartIndex, visibleStopIndex }) => {
-            const threshold = Math.max(0, filteredEmails.length - 12)
-            if (!loading && hasMore && visibleStopIndex >= threshold) {
-              onLoadNext?.()
-            }
-          }}
         >
           {({ index, style }) => {
             const email = filteredEmails[index]
             return (
               <div
-                key={email.id}
+                key={`${email.id}-${email.isRead ? 'read' : 'unread'}`}
                 style={style}
                 className={cn(
                   "flex items-center gap-4 p-4 hover:bg-gray-50 cursor-pointer transition-colors border-b border-gray-100",
                   selectedEmailId === email.id && "bg-blue-50 border-r-2 border-blue-500",
-                  !email.isRead && "bg-[#f7d794]"
+                  email.isRead ? "bg-gray-100" : "bg-[#ffeabd]"
                 )}
                 onClick={() => onEmailSelect(email.id)}
               >
@@ -314,12 +308,21 @@ export default function EmailList({
                         <MoreHorizontal className="w-4 h-4" />
                       </Button>
                     </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end">
-                      <DropdownMenuItem onClick={() => onEmailAction('archive', [email.id])}>
-                        <Archive className="w-4 h-4 mr-2" />
-                        Archive
-                      </DropdownMenuItem>
-                      <DropdownMenuItem onClick={() => onEmailAction('delete', [email.id])}>
+                <DropdownMenuContent align="end">
+                  {email.isRead ? (
+                    <DropdownMenuItem onClick={() => onEmailAction('unread', [email.id])}>
+                      Mark as unread
+                    </DropdownMenuItem>
+                  ) : (
+                    <DropdownMenuItem onClick={() => onEmailAction('read', [email.id])}>
+                      Mark as read
+                    </DropdownMenuItem>
+                  )}
+                  <DropdownMenuItem onClick={() => onEmailAction('archive', [email.id])}>
+                    <Archive className="w-4 h-4 mr-2" />
+                    Archive
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => onEmailAction('delete', [email.id])}>
                         <Trash2 className="w-4 h-4 mr-2" />
                         Delete
                       </DropdownMenuItem>
