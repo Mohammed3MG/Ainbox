@@ -259,6 +259,8 @@ router.get('/outlook/inbox-stats', requireAuth, async (req, res) => {
     });
     // Persist latest stats so UI can use Redis-backed stats immediately elsewhere
     try { await emailCache.setUserStats(userId, 'outlook', value); } catch (_) {}
+    // Auto-start Outlook sync for this user to receive real-time updates
+    try { require('../lib/outlookSync').startSyncForUser(userId, req.cookies); } catch (_) {}
     return res.json(value);
   } catch (e) {
     console.error(e);

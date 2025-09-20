@@ -337,11 +337,11 @@ export function useEmail() {
   useEffect(() => {
     const unsubscribe = subscribeToEmailUpdates((update) => {
       switch (update.type) {
-        case 'new_email':
-          setEmails(prev => [formatEmailForDisplay(update.email), ...prev])
-          setTotal(prev => prev + 1)
-          if (!update.email?.isRead) setUnreadCount(prev => prev + 1)
+        case 'new_email': {
+          // Skip - handled by Socket.IO now to prevent duplicate updates
+          console.log('📨 SSE new_email event (skipped - using Socket.IO)')
           break
+        }
         case 'unread_count_updated':
           if (typeof update.unread === 'number') setUnreadCount(update.unread)
           if (typeof update.total === 'number') setTotal(update.total)
@@ -379,7 +379,9 @@ export function useEmail() {
     // Connect to Socket.IO service for immediate updates
     // Note: userId should come from authentication context
     const userId = 1; // TODO: Get from auth context
+    console.log('🔌 [HOOK] Connecting to Socket.IO service...');
     socketService.connect(userId, 'auth-token')
+    console.log('🔌 [HOOK] Socket.IO connection initiated');
 
     // Listen for email state updates with conflict prevention
     const unsubscribeEmailUpdated = socketService.addEventListener('emailUpdated', (data) => {
@@ -425,6 +427,75 @@ export function useEmail() {
       }
     })
 
+    // Listen for new email arrivals
+    const unsubscribeNewEmail = socketService.addEventListener('newEmail', (data) => {
+      console.log('🎯 [NEW EMAIL] Socket.IO new email event received!', data);
+
+      if (data.email) {
+        const formattedEmail = formatEmailForDisplay(data.email);
+        console.log('🎯 [NEW EMAIL] Formatted email:', formattedEmail);
+
+        // Add new email to the top of the inbox with unread status
+        setEmails(prev => {
+          console.log('🎯 [NEW EMAIL] Adding to emails. Current count:', prev.length);
+          const newEmails = [formattedEmail, ...prev];
+          console.log('🎯 [NEW EMAIL] New emails count:', newEmails.length);
+          return newEmails;
+        });
+        setTotal(prev => {
+          console.log('🎯 [NEW EMAIL] Updating total from', prev, 'to', prev + 1);
+          return prev + 1;
+        });
+
+        // Increment unread count if the email is unread
+        if (!formattedEmail.isRead) {
+          setUnreadCount(prev => {
+            console.log('🎯 [NEW EMAIL] Updating unread count from', prev, 'to', prev + 1);
+            return prev + 1;
+          });
+        }
+
+        console.log('✅ [NEW EMAIL] Successfully added new email to inbox:', formattedEmail.id, 'isRead:', formattedEmail.isRead);
+      } else {
+        console.warn('⚠️ [NEW EMAIL] No email data in newEmail event');
+      }
+    });
+
+    // Listen for email deletions
+    const unsubscribeEmailDeleted = socketService.addEventListener('emailDeleted', (data) => {
+      console.log('🗑️ [EMAIL DELETED] Socket.IO email deletion received!', data);
+
+      if (data.emailId) {
+        // Remove deleted email from the list
+        setEmails(prev => {
+          const beforeCount = prev.length;
+          const filtered = prev.filter(email => {
+            // Match by any of the possible ID fields
+            return !(
+              email.id === data.emailId ||
+              email.threadId === data.emailId ||
+              email.messageId === data.emailId ||
+              email.conversationId === data.emailId
+            );
+          });
+          const afterCount = filtered.length;
+          console.log(`🗑️ [EMAIL DELETED] Removed email from list. Before: ${beforeCount}, After: ${afterCount}`);
+          return filtered;
+        });
+
+        // Update total count
+        setTotal(prev => {
+          const newTotal = Math.max(0, prev - 1);
+          console.log(`🗑️ [EMAIL DELETED] Updated total count from ${prev} to ${newTotal}`);
+          return newTotal;
+        });
+
+        console.log(`✅ [EMAIL DELETED] Successfully removed email ${data.emailId} from inbox`);
+      } else {
+        console.warn('⚠️ [EMAIL DELETED] No emailId in deletion event');
+      }
+    });
+
     // Listen for bidirectional email action broadcasts from other sessions
     const unsubscribeActionBroadcast = socketService.addEventListener('emailActionBroadcast', (data) => {
       console.log('📡 Socket.IO action broadcast received:', data);
@@ -466,6 +537,8 @@ export function useEmail() {
     return () => {
       unsubscribeEmailUpdated()
       unsubscribeCountUpdate()
+      unsubscribeNewEmail()
+      unsubscribeEmailDeleted()
       unsubscribeActionBroadcast()
     }
   }, [loadEmails])

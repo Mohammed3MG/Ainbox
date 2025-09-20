@@ -268,6 +268,16 @@ class SocketIOService {
     });
   }
 
+  // Send email deletion notification
+  emailDeleted(userId, emailData) {
+    this.broadcastToUser(userId, 'email_deleted', {
+      type: 'email_deleted',
+      emailId: emailData.id,
+      timestamp: emailData.timestamp,
+      source: emailData.source || 'external_deletion'
+    });
+  }
+
   // Get service statistics
   getStats() {
     return {

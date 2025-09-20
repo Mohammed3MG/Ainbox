@@ -2,7 +2,7 @@
 const { google } = require('googleapis');
 const { getGoogleOAuthClientFromCookies } = require('../utils/googleClient');
 const emailCache = require('./emailCache');
-const socketIOService = require('./socketio');
+const { broadcastToUser } = require('./sse');
 
 class GmailSyncService {
   constructor() {
@@ -37,6 +37,9 @@ class GmailSyncService {
       });
 
       console.log(`✅ Gmail sync started for user ${userId}`);
+
+      // Real-time sync is now active for new emails and deletions
+
     } catch (error) {
       console.error(`❌ Failed to start Gmail sync for user ${userId}:`, error.message);
       // Still try polling even if push notifications fail
@@ -71,10 +74,10 @@ class GmailSyncService {
       clearInterval(this.pollingIntervals.get(userId));
     }
 
-    // Poll every 2 seconds for immediate updates
+    // Poll every 5 seconds for updates (tunable)
     const interval = setInterval(async () => {
       await this.pollGmailChanges(userId, cookies);
-    }, 2000);
+    }, 5000);
 
     this.pollingIntervals.set(userId, interval);
     console.log(`⏰ Set up Gmail polling for user ${userId} (every 2s)`);
@@ -88,15 +91,8 @@ class GmailSyncService {
 
       // Get current inbox stats
       const newStats = await this.getGmailStats(gmail);
-      // Use the same key format as Gmail route
       const cacheKey = `inbox:stats:gmail:${userId}`;
       const cachedStats = await require('./smartCache').get(cacheKey);
-
-      console.log(`🔍 Cache check for ${cacheKey}:`, {
-        cached: cachedStats,
-        new: newStats,
-        hasChanged: this.hasStatsChanged(cachedStats, newStats)
-      });
 
       // Detect individual email changes using history
       await this.checkEmailHistoryChanges(userId, gmail);
@@ -108,17 +104,14 @@ class GmailSyncService {
           new: { unread: newStats.unread, total: newStats.total }
         });
 
-        // Update cache using the same key format as Gmail route
+        // Update cache and broadcast via SSE
         await require('./smartCache').set(cacheKey, newStats, 45_000);
-
-        // DON'T invalidate email cache on count changes - preserve email list cache
-        // await emailCache.invalidateUserInbox(userId, 'gmail');
-
-        // Broadcast real-time update to frontend via Socket.IO
-        socketIOService.countUpdated(userId, {
+        broadcastToUser(userId, {
+          type: 'unread_count_updated',
           unread: newStats.unread,
-          total: newStats.total
-        }, 'external_change');
+          total: newStats.total,
+          source: 'external_change'
+        });
 
         console.log(`📡 Broadcasted Gmail count update to user ${userId} (external change detected)`);
       }
@@ -242,6 +235,16 @@ class GmailSyncService {
         }
       }
 
+      // Handle messages deleted (deleted emails)
+      if (record.messagesDeleted) {
+        for (const deletedMsg of record.messagesDeleted) {
+          if (deletedMsg.message) {
+            console.log(`🗑️ Email deletion detected: ${deletedMsg.message.id}`);
+            await this.broadcastEmailDeleted(userId, gmail, deletedMsg.message.id);
+          }
+        }
+      }
+
       // Handle label changes (read/unread status)
       if (record.labelsAdded || record.labelsRemoved) {
         const changes = [...(record.labelsAdded || []), ...(record.labelsRemoved || [])];
@@ -260,7 +263,7 @@ class GmailSyncService {
 
   // Check if message is in inbox/primary
   isInboxPrimary(labelIds = []) {
-    return labelIds.includes('INBOX') && labelIds.includes('CATEGORY_PRIMARY');
+    return labelIds.includes('INBOX') && labelIds.includes('CATEGORY_PERSONAL');
   }
 
   // Check if this is a read/unread status change
@@ -271,21 +274,39 @@ class GmailSyncService {
   // Broadcast new email arrival
   async broadcastNewEmail(userId, gmail, messageId) {
     try {
-      // Get the full message details
+      // Get the full message details with payload for attachment checking
       const message = await gmail.users.messages.get({
         userId: 'me',
         id: messageId,
-        format: 'metadata',
-        metadataHeaders: ['From', 'Subject', 'Date']
+        format: 'full'
       });
 
       const email = this.formatEmailFromGmail(message.data);
+      broadcastToUser(userId, { type: 'new_email', email });
 
-      socketIOService.newEmail(userId, email);
-
-      console.log(`📡 Broadcasted new email arrival for ${messageId}`);
+      console.log(`📡 Broadcasted new email arrival for ${messageId}: "${email.subject}"`);
     } catch (error) {
       console.error(`❌ Failed to broadcast new email:`, error.message);
+    }
+  }
+
+  // Broadcast email deletion
+  async broadcastEmailDeleted(userId, gmail, messageId) {
+    try {
+      let threadId = null;
+      try {
+        const msg = await gmail.users.messages.get({ userId: 'me', id: messageId, format: 'minimal' });
+        threadId = msg?.data?.threadId || null;
+      } catch (_) {}
+
+      broadcastToUser(userId, {
+        type: 'email_deleted',
+        emailId: threadId || messageId,
+        source: 'external_deletion',
+        timestamp: Date.now()
+      });
+    } catch (error) {
+      console.error(`❌ Failed to broadcast email deletion:`, error.message);
     }
   }
 
@@ -323,10 +344,9 @@ class GmailSyncService {
         }
       }
 
-      socketIOService.emailUpdated(userId, {
-        id: messageId,
-        threadId: message.data.threadId,
-        isRead: isRead,
+      broadcastToUser(userId, {
+        type: 'email_updated',
+        email: { id: message.data.threadId, threadId: message.data.threadId, isRead },
         source: 'external_change'
       });
 
@@ -341,16 +361,57 @@ class GmailSyncService {
     const headers = message.payload?.headers || [];
     const getHeader = (name) => headers.find(h => h.name === name)?.value || '';
 
+    // Extract date and format time
+    const rawDate = getHeader('Date');
+    const dateObj = rawDate ? new Date(rawDate) : new Date();
+    const now = new Date();
+    const isToday = dateObj.toDateString() === now.toDateString();
+    const time = isToday ?
+      dateObj.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true }) :
+      dateObj.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+
+    // Get basic labels from Gmail label IDs
+    const labels = [];
+    if (message.labelIds?.includes('CATEGORY_PROMOTIONS')) labels.push('marketing');
+    if (message.labelIds?.includes('CATEGORY_UPDATES')) labels.push('updates');
+    if (message.labelIds?.includes('CATEGORY_PERSONAL')) labels.push('personal');
+
+    // Check for attachments
+    const hasAttachment = this.checkForAttachments(message.payload);
+
     return {
-      id: message.id,
+      id: message.threadId,
       threadId: message.threadId,
-      subject: getHeader('Subject'),
+      messageId: message.id,
+      subject: getHeader('Subject') || '(no subject)',
       from: getHeader('From'),
-      date: getHeader('Date'),
+      to: getHeader('To'),
+      date: rawDate,
+      time: time,
       isRead: !message.labelIds?.includes('UNREAD'),
       isStarred: message.labelIds?.includes('STARRED') || false,
-      snippet: message.snippet || ''
+      snippet: message.snippet || '',
+      preview: message.snippet || '',
+      labels: labels,
+      hasAttachment: hasAttachment
     };
+  }
+
+  // Helper function to check for attachments
+  checkForAttachments(payload) {
+    if (!payload) return false;
+
+    // Check if this part has an attachment
+    if (payload.filename && payload.filename.length > 0) {
+      return true;
+    }
+
+    // Check parts recursively
+    if (payload.parts) {
+      return payload.parts.some(part => this.checkForAttachments(part));
+    }
+
+    return false;
   }
 
   // Stop sync for a user

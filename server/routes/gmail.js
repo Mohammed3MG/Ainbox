@@ -790,4 +790,53 @@ router.get('/drafts/:id', requireAuth, async (req, res) => {
   }
 });
 
+// Test endpoint to simulate new email arrival (for development/testing)
+router.post('/test/simulate-new-email', requireAuth, async (req, res) => {
+  try {
+    const userId = req.user?.id || 1; // Get user ID from session
+
+    // Create a mock email object with proper structure
+    const mockEmail = {
+      id: `test_${Date.now()}`,
+      threadId: `thread_${Date.now()}`,
+      subject: 'Test New Email Arrival',
+      from: 'Test Sender <test@example.com>',
+      to: req.user?.email || 'user@example.com',
+      date: new Date().toISOString(),
+      time: new Date().toLocaleTimeString('en-US', {
+        hour: 'numeric',
+        minute: '2-digit',
+        hour12: true
+      }),
+      isRead: false, // New emails are unread
+      isStarred: false,
+      snippet: 'This is a test email to simulate new email arrival functionality.',
+      preview: 'This is a test email to simulate new email arrival functionality.',
+      labels: ['new'],
+      hasAttachment: false
+    };
+
+    console.log(`🧪 Simulating new email arrival for user ${userId}`);
+
+    // Broadcast new email via Socket.IO
+    socketIOService.newEmail(userId, mockEmail);
+
+    // Also update counts
+    socketIOService.countUpdated(userId, {
+      unread: 999, // Use a test number
+      total: 9999
+    }, 'test_simulation');
+
+    res.json({
+      success: true,
+      message: 'New email arrival simulated',
+      email: mockEmail
+    });
+
+  } catch (err) {
+    console.error('Error simulating new email:', err);
+    res.status(500).json({ error: 'Failed to simulate new email' });
+  }
+});
+
 module.exports = router;

@@ -96,9 +96,25 @@ class SocketIOService {
 
     // New email events
     this.socket.on('new_email', (data) => {
-      console.log('📨 Socket.IO new email:', data);
+      console.log('🚨 [SOCKET] Raw new_email event received:', data);
+      console.log('🚨 [SOCKET] Event data type:', typeof data);
+      console.log('🚨 [SOCKET] Event data.email:', data.email);
+      console.log('🚨 [SOCKET] Has listeners for newEmail:', this.listeners.has('newEmail'));
+
       this.notifyListeners('newEmail', {
         email: data.email,
+        timestamp: data.timestamp,
+        source: data.source
+      });
+
+      console.log('🚨 [SOCKET] Notified listeners for newEmail event');
+    });
+
+    // Email deletion events
+    this.socket.on('email_deleted', (data) => {
+      console.log('🗑️ Socket.IO email deleted:', data);
+      this.notifyListeners('emailDeleted', {
+        emailId: data.emailId,
         timestamp: data.timestamp,
         source: data.source
       });
