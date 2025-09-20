@@ -490,23 +490,69 @@ export async function getEmailById(emailId) {
 export async function markEmailAsRead(emailIds) {
   const ids = Array.isArray(emailIds) ? emailIds : [emailIds]
   const provider = await getCurrentProvider()
-  if (provider === 'gmail') {
-    return apiFetch('/gmail/mark-read', { method: 'POST', body: { ids } })
-  } else if (provider === 'outlook') {
-    return apiFetch('/outlook/mark-read', { method: 'POST', body: { ids } })
+
+  try {
+    if (provider === 'gmail') {
+      const result = await apiFetch('/gmail/mark-read', { method: 'POST', body: { ids } })
+      // Return immediate count updates if available
+      if (result.newCounts) {
+        return {
+          success: true,
+          newCounts: result.newCounts,
+          immediateUpdate: true
+        }
+      }
+      return { success: true }
+    } else if (provider === 'outlook') {
+      const result = await apiFetch('/outlook/mark-read', { method: 'POST', body: { ids } })
+      if (result.newCounts) {
+        return {
+          success: true,
+          newCounts: result.newCounts,
+          immediateUpdate: true
+        }
+      }
+      return { success: true }
+    }
+    return { success: true }
+  } catch (error) {
+    console.error('Failed to mark email as read:', error)
+    throw error
   }
-  return { success: true }
 }
 
 export async function markEmailAsUnread(emailIds) {
   const ids = Array.isArray(emailIds) ? emailIds : [emailIds]
   const provider = await getCurrentProvider()
-  if (provider === 'gmail') {
-    return apiFetch('/gmail/mark-unread', { method: 'POST', body: { ids } })
-  } else if (provider === 'outlook') {
-    return apiFetch('/outlook/mark-unread', { method: 'POST', body: { ids } })
+
+  try {
+    if (provider === 'gmail') {
+      const result = await apiFetch('/gmail/mark-unread', { method: 'POST', body: { ids } })
+      // Return immediate count updates if available
+      if (result.newCounts) {
+        return {
+          success: true,
+          newCounts: result.newCounts,
+          immediateUpdate: true
+        }
+      }
+      return { success: true }
+    } else if (provider === 'outlook') {
+      const result = await apiFetch('/outlook/mark-unread', { method: 'POST', body: { ids } })
+      if (result.newCounts) {
+        return {
+          success: true,
+          newCounts: result.newCounts,
+          immediateUpdate: true
+        }
+      }
+      return { success: true }
+    }
+    return { success: true }
+  } catch (error) {
+    console.error('Failed to mark email as unread:', error)
+    throw error
   }
-  return { success: true }
 }
 
 export async function starEmail(emailIds) {

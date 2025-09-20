@@ -2,13 +2,15 @@
 const { google } = require('googleapis');
 const { getGoogleOAuthClientFromCookies } = require('../utils/googleClient');
 const emailCache = require('./emailCache');
-const { broadcastToUser } = require('./sse');
+const socketIOService = require('./socketio');
 
 class GmailSyncService {
   constructor() {
     this.activeSyncs = new Map(); // userId -> sync info
     this.pollingIntervals = new Map(); // userId -> interval ID
     this.watchRequests = new Map(); // userId -> watch request info
+    this.historyIds = new Map(); // userId -> lastHistoryId for incremental sync
+    this.recentUpdates = new Map(); // userId -> Map(emailId -> { isRead, timestamp })
   }
 
   // Start real-time sync for a user
@@ -69,13 +71,13 @@ class GmailSyncService {
       clearInterval(this.pollingIntervals.get(userId));
     }
 
-    // Poll every 10 seconds for faster updates
+    // Poll every 2 seconds for immediate updates
     const interval = setInterval(async () => {
       await this.pollGmailChanges(userId, cookies);
-    }, 10000);
+    }, 2000);
 
     this.pollingIntervals.set(userId, interval);
-    console.log(`⏰ Set up Gmail polling for user ${userId} (every 10s)`);
+    console.log(`⏰ Set up Gmail polling for user ${userId} (every 2s)`);
   }
 
   // Poll Gmail for changes and update cache/frontend
@@ -90,7 +92,16 @@ class GmailSyncService {
       const cacheKey = `inbox:stats:gmail:${userId}`;
       const cachedStats = await require('./smartCache').get(cacheKey);
 
-      // Compare with cached stats
+      console.log(`🔍 Cache check for ${cacheKey}:`, {
+        cached: cachedStats,
+        new: newStats,
+        hasChanged: this.hasStatsChanged(cachedStats, newStats)
+      });
+
+      // Detect individual email changes using history
+      await this.checkEmailHistoryChanges(userId, gmail);
+
+      // Enable external change detection for immediate updates
       if (this.hasStatsChanged(cachedStats, newStats)) {
         console.log(`📊 Gmail stats changed for user ${userId}`, {
           old: cachedStats ? { unread: cachedStats.unread, total: cachedStats.total } : null,
@@ -100,19 +111,16 @@ class GmailSyncService {
         // Update cache using the same key format as Gmail route
         await require('./smartCache').set(cacheKey, newStats, 45_000);
 
-        // Invalidate related caches
-        await emailCache.invalidateUserInbox(userId, 'gmail');
+        // DON'T invalidate email cache on count changes - preserve email list cache
+        // await emailCache.invalidateUserInbox(userId, 'gmail');
 
-        // Broadcast real-time update to frontend
-        broadcastToUser(userId, {
-          type: 'unread_count_updated',
+        // Broadcast real-time update to frontend via Socket.IO
+        socketIOService.countUpdated(userId, {
           unread: newStats.unread,
-          total: newStats.total,
-          timestamp: Date.now(),
-          source: 'external_change'
-        });
+          total: newStats.total
+        }, 'external_change');
 
-        console.log(`📡 Broadcasted Gmail update to user ${userId}`);
+        console.log(`📡 Broadcasted Gmail count update to user ${userId} (external change detected)`);
       }
 
       // Update last sync time
@@ -180,6 +188,171 @@ class GmailSyncService {
     );
   }
 
+  // Check for individual email changes using Gmail history API
+  async checkEmailHistoryChanges(userId, gmail) {
+    try {
+      const lastHistoryId = this.historyIds.get(userId);
+
+      if (!lastHistoryId) {
+        // First time - get current historyId and store it
+        const profile = await gmail.users.getProfile({ userId: 'me' });
+        this.historyIds.set(userId, profile.data.historyId);
+        console.log(`📝 Stored initial historyId for user ${userId}: ${profile.data.historyId}`);
+        return;
+      }
+
+      // Get history changes since last check
+      const historyResponse = await gmail.users.history.list({
+        userId: 'me',
+        startHistoryId: lastHistoryId,
+        labelId: 'INBOX',
+        historyTypes: ['messageAdded', 'messageDeleted', 'labelAdded', 'labelRemoved']
+      });
+
+      const history = historyResponse.data.history || [];
+      if (history.length === 0) return;
+
+      console.log(`📧 Found ${history.length} history changes for user ${userId}`);
+
+      // Process each history record
+      for (const record of history) {
+        await this.processHistoryRecord(userId, gmail, record);
+      }
+
+      // Update stored historyId
+      if (historyResponse.data.historyId) {
+        this.historyIds.set(userId, historyResponse.data.historyId);
+      }
+
+    } catch (error) {
+      console.error(`❌ Failed to check email history for user ${userId}:`, error.message);
+    }
+  }
+
+  // Process individual history record for email changes
+  async processHistoryRecord(userId, gmail, record) {
+    try {
+      // Handle messages added (new emails)
+      if (record.messagesAdded) {
+        for (const addedMsg of record.messagesAdded) {
+          if (addedMsg.message && this.isInboxPrimary(addedMsg.message.labelIds)) {
+            console.log(`📨 New email detected: ${addedMsg.message.id}`);
+            await this.broadcastNewEmail(userId, gmail, addedMsg.message.id);
+          }
+        }
+      }
+
+      // Handle label changes (read/unread status)
+      if (record.labelsAdded || record.labelsRemoved) {
+        const changes = [...(record.labelsAdded || []), ...(record.labelsRemoved || [])];
+        for (const change of changes) {
+          if (change.message && this.isReadUnreadChange(change.labelIds)) {
+            console.log(`🏷️ Read/unread change detected: ${change.message.id}`);
+            await this.broadcastEmailStateChange(userId, gmail, change.message.id);
+          }
+        }
+      }
+
+    } catch (error) {
+      console.error(`❌ Failed to process history record:`, error.message);
+    }
+  }
+
+  // Check if message is in inbox/primary
+  isInboxPrimary(labelIds = []) {
+    return labelIds.includes('INBOX') && labelIds.includes('CATEGORY_PRIMARY');
+  }
+
+  // Check if this is a read/unread status change
+  isReadUnreadChange(labelIds = []) {
+    return labelIds.includes('UNREAD');
+  }
+
+  // Broadcast new email arrival
+  async broadcastNewEmail(userId, gmail, messageId) {
+    try {
+      // Get the full message details
+      const message = await gmail.users.messages.get({
+        userId: 'me',
+        id: messageId,
+        format: 'metadata',
+        metadataHeaders: ['From', 'Subject', 'Date']
+      });
+
+      const email = this.formatEmailFromGmail(message.data);
+
+      socketIOService.newEmail(userId, email);
+
+      console.log(`📡 Broadcasted new email arrival for ${messageId}`);
+    } catch (error) {
+      console.error(`❌ Failed to broadcast new email:`, error.message);
+    }
+  }
+
+  // Broadcast email state change (read/unread)
+  async broadcastEmailStateChange(userId, gmail, messageId) {
+    try {
+      // Get current message state
+      const message = await gmail.users.messages.get({
+        userId: 'me',
+        id: messageId,
+        format: 'minimal'
+      });
+
+      const isRead = !message.data.labelIds?.includes('UNREAD');
+
+      // Check for recent duplicate update
+      if (!this.recentUpdates.has(userId)) {
+        this.recentUpdates.set(userId, new Map());
+      }
+      const userUpdates = this.recentUpdates.get(userId);
+      const recent = userUpdates.get(messageId);
+
+      if (recent && recent.isRead === isRead && (Date.now() - recent.timestamp) < 3000) {
+        console.log(`🚫 Skipping duplicate email update for ${messageId}: isRead=${isRead}`);
+        return;
+      }
+
+      // Store this update to prevent duplicates
+      userUpdates.set(messageId, { isRead, timestamp: Date.now() });
+
+      // Clean old updates (older than 10 seconds)
+      for (const [id, update] of userUpdates.entries()) {
+        if (Date.now() - update.timestamp > 10000) {
+          userUpdates.delete(id);
+        }
+      }
+
+      socketIOService.emailUpdated(userId, {
+        id: messageId,
+        threadId: message.data.threadId,
+        isRead: isRead,
+        source: 'external_change'
+      });
+
+      console.log(`📡 Broadcasted email state change for ${messageId}: isRead=${isRead}`);
+    } catch (error) {
+      console.error(`❌ Failed to broadcast email state change:`, error.message);
+    }
+  }
+
+  // Format Gmail message for frontend
+  formatEmailFromGmail(message) {
+    const headers = message.payload?.headers || [];
+    const getHeader = (name) => headers.find(h => h.name === name)?.value || '';
+
+    return {
+      id: message.id,
+      threadId: message.threadId,
+      subject: getHeader('Subject'),
+      from: getHeader('From'),
+      date: getHeader('Date'),
+      isRead: !message.labelIds?.includes('UNREAD'),
+      isStarred: message.labelIds?.includes('STARRED') || false,
+      snippet: message.snippet || ''
+    };
+  }
+
   // Stop sync for a user
   stopSyncForUser(userId) {
     console.log(`🛑 Stopping Gmail sync for user ${userId}`);
@@ -192,6 +365,9 @@ class GmailSyncService {
 
     // Remove from active syncs
     this.activeSyncs.delete(userId);
+
+    // Clear stored historyId
+    this.historyIds.delete(userId);
 
     console.log(`✅ Gmail sync stopped for user ${userId}`);
   }
@@ -240,6 +416,8 @@ class GmailSyncService {
     this.pollingIntervals.clear();
     this.activeSyncs.clear();
     this.watchRequests.clear();
+    this.historyIds.clear();
+    this.recentUpdates.clear();
   }
 }
 

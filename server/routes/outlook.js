@@ -142,6 +142,60 @@ async function listMessages(req, res) {
       if (ov === 'unread') m.isRead = false;
       return m;
     }));
+    // Enhance: compute origin (first inbound) sender per conversation and set it as from
+    try {
+      const convIds = Array.from(new Set(items.map(m => m.conversationId || m.id).filter(Boolean)));
+      if (convIds.length) {
+        // Discover current user email to exclude self-sent
+        const meResp = await httpGet('https://graph.microsoft.com/v1.0/me?$select=mail,userPrincipalName', token);
+        const meJson = await readJsonSafe(meResp);
+        const myEmail = (meJson.mail || meJson.userPrincipalName || '').toLowerCase();
+
+        // Batch fetch earliest messages for each conversation
+        const requests = convIds.map((cid, idx) => ({
+          id: String(idx + 1),
+          method: 'GET',
+          url: `/me/messages?$select=id,from,receivedDateTime&$filter=conversationId eq '${cid}'&$orderby=receivedDateTime asc&$top=5`
+        }));
+        const batchResp = await httpBatch(token, requests);
+        const batchJson = await readJsonSafe(batchResp);
+        const originMap = new Map();
+        if (batchResp.ok && Array.isArray(batchJson.responses)) {
+          for (const r of batchJson.responses) {
+            const body = r.body || {};
+            const arr = body.value || [];
+            let origin = null;
+            for (const m of arr) {
+              const addr = (m.from?.emailAddress?.address || '').toLowerCase();
+              const name = m.from?.emailAddress?.name;
+              if (!addr || addr === myEmail) continue;
+              origin = name ? `${name} <${addr}>` : addr;
+              break;
+            }
+            if (!origin && arr[0]?.from?.emailAddress?.address) {
+              const a = arr[0].from.emailAddress.address;
+              const n = arr[0].from.emailAddress.name;
+              origin = n ? `${n} <${a}>` : a;
+            }
+            const idxNum = Number(r.id) - 1;
+            const convId = convIds[idxNum];
+            if (convId && origin) originMap.set(convId, origin);
+          }
+        }
+        // Apply origin to items
+        items = items.map(it => {
+          const cid = it.conversationId || it.id;
+          const origin = originMap.get(cid);
+          if (origin) {
+            it.latestFrom = it.from;
+            it.originFrom = origin;
+            it.from = origin;
+          }
+          return it;
+        });
+      }
+    } catch (_) { /* ignore origin errors */ }
+
     const nextLink = json['@odata.nextLink'] || null;
     let nextSkip = null;
     if (nextLink) {
@@ -314,7 +368,21 @@ router.post('/outlook/mark-read', requireAuth, async (req, res) => {
       const userId = String(req.auth?.sub);
       await emailCache.invalidateOnAction(userId, 'outlook', 'mark_read', ids);
     } catch (_) {}
-    return res.json({ ok, total: ids.length });
+    // Return immediate count update to frontend
+    try {
+      const userId = String(req.auth?.sub);
+      const currentStats = (await emailCache.getUserStats(userId, 'outlook')) || { unread: 0, total: 0 };
+      return res.json({
+        ok,
+        total: ids.length,
+        newCounts: {
+          unread: currentStats.unread,
+          total: currentStats.total
+        }
+      });
+    } catch (_) {
+      return res.json({ ok, total: ids.length });
+    }
   } catch (e) {
     console.error('outlook/mark-read failed:', e);
     return res.status(401).json({ error: 'Unable to mark Outlook conversations as read' });
@@ -385,7 +453,21 @@ router.post('/outlook/mark-unread', requireAuth, async (req, res) => {
       const userId = String(req.auth?.sub);
       await emailCache.invalidateOnAction(userId, 'outlook', 'mark_unread', ids);
     } catch (_) {}
-    return res.json({ ok, total: ids.length });
+    // Return immediate count update to frontend
+    try {
+      const userId = String(req.auth?.sub);
+      const currentStats = (await emailCache.getUserStats(userId, 'outlook')) || { unread: 0, total: 0 };
+      return res.json({
+        ok,
+        total: ids.length,
+        newCounts: {
+          unread: currentStats.unread,
+          total: currentStats.total
+        }
+      });
+    } catch (_) {
+      return res.json({ ok, total: ids.length });
+    }
   } catch (e) {
     console.error('outlook/mark-unread failed:', e);
     return res.status(401).json({ error: 'Unable to mark Outlook conversations as unread' });

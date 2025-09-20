@@ -4,7 +4,7 @@ const { requireAuth } = require('../middleware/auth');
 const { getGoogleOAuthClientFromCookies } = require('../utils/googleClient');
 const cache = require('../lib/cache');
 const emailCache = require('../lib/emailCache');
-const { broadcastToUser } = require('../lib/sse');
+const socketIOService = require('../lib/socketio');
 const gmailSync = require('../lib/gmailSync');
 const readState = require('../lib/readState');
 
@@ -236,7 +236,7 @@ router.post('/gmail/mark-read', requireAuth, async (req, res) => {
         await readState.removeUnread(uid, 'gmail', id);
         // Notify UI instantly for the row; counts broadcast later using Primary-only stats
         try {
-          broadcastToUser(uid, { type: 'email_updated', email: { id, isRead: true } });
+          socketIOService.emailUpdated(uid, { id, isRead: true, source: 'user_action' });
         } catch (_) {}
         ok += 1;
         // background sync to provider
@@ -265,7 +265,7 @@ router.post('/gmail/mark-read', requireAuth, async (req, res) => {
       if (cur) {
         const next = { ...cur, unread: Math.max(0, (cur.unread || 0) - ids.length) };
         await emailCache.setUserStats(userId, 'gmail', next);
-        broadcastToUser(userId, { type: 'unread_count_updated', unread: next.unread, total: next.total });
+        socketIOService.countUpdated(userId, { unread: next.unread, total: next.total }, 'user_action');
       }
     } catch (_) {}
 
@@ -276,11 +276,25 @@ router.post('/gmail/mark-read', requireAuth, async (req, res) => {
         const oauth2Client2 = await getGoogleOAuthClientFromCookies(req);
         const stats = await computePrimaryInboxCounts(oauth2Client2);
         await emailCache.setUserStats(userId, 'gmail', stats);
-        broadcastToUser(userId, { type: 'unread_count_updated', unread: stats.unread, total: stats.total });
+        socketIOService.countUpdated(userId, { unread: stats.unread, total: stats.total }, 'user_action');
       } catch (_) {}
     });
 
-    return res.json({ ok, total: ids.length });
+    // Return immediate count update to frontend
+    try {
+      const userId = String(req.auth?.sub);
+      const currentStats = (await emailCache.getUserStats(userId, 'gmail')) || { unread: 0, total: 0 };
+      return res.json({
+        ok,
+        total: ids.length,
+        newCounts: {
+          unread: currentStats.unread,
+          total: currentStats.total
+        }
+      });
+    } catch (_) {
+      return res.json({ ok, total: ids.length });
+    }
   } catch (e) {
     console.error('gmail/mark-read failed:', e);
     return res.status(401).json({ error: 'Unable to mark Gmail threads as read' });
@@ -321,7 +335,7 @@ router.post('/gmail/mark-unread', requireAuth, async (req, res) => {
         await readState.setOverride(uid, 'gmail', id, 'unread');
         await readState.addUnread(uid, 'gmail', id);
         try {
-          broadcastToUser(uid, { type: 'email_updated', email: { id, isRead: false } });
+          socketIOService.emailUpdated(uid, { id, isRead: false, source: 'user_action' });
         } catch (_) {}
         ok += 1;
         setImmediate(async () => {
@@ -349,7 +363,7 @@ router.post('/gmail/mark-unread', requireAuth, async (req, res) => {
       if (cur) {
         const next = { ...cur, unread: Math.max(0, (cur.unread || 0) + ids.length) };
         await emailCache.setUserStats(userId, 'gmail', next);
-        broadcastToUser(userId, { type: 'unread_count_updated', unread: next.unread, total: next.total });
+        socketIOService.countUpdated(userId, { unread: next.unread, total: next.total }, 'user_action');
       }
     } catch (_) {}
 
@@ -360,11 +374,25 @@ router.post('/gmail/mark-unread', requireAuth, async (req, res) => {
         const oauth2Client2 = await getGoogleOAuthClientFromCookies(req);
         const stats = await computePrimaryInboxCounts(oauth2Client2);
         await emailCache.setUserStats(userId, 'gmail', stats);
-        broadcastToUser(userId, { type: 'unread_count_updated', unread: stats.unread, total: stats.total });
+        socketIOService.countUpdated(userId, { unread: stats.unread, total: stats.total }, 'user_action');
       } catch (_) {}
     });
 
-    return res.json({ ok, total: ids.length });
+    // Return immediate count update to frontend
+    try {
+      const userId = String(req.auth?.sub);
+      const currentStats = (await emailCache.getUserStats(userId, 'gmail')) || { unread: 0, total: 0 };
+      return res.json({
+        ok,
+        total: ids.length,
+        newCounts: {
+          unread: currentStats.unread,
+          total: currentStats.total
+        }
+      });
+    } catch (_) {
+      return res.json({ ok, total: ids.length });
+    }
   } catch (e) {
     console.error('gmail/mark-unread failed:', e);
     return res.status(401).json({ error: 'Unable to mark Gmail threads as unread' });
@@ -391,7 +419,7 @@ router.post('/gmail/trash', requireAuth, async (req, res) => {
     try {
       try { await cache.del(`inbox:stats:gmail:${uid}`); } catch (_) {}
       await emailCache.invalidateOnAction(uid, 'gmail', 'delete', ids);
-      broadcastToUser(uid, { type: 'email_deleted', emailId: ids[0] });
+      // Note: Socket.IO service doesn't have emailDeleted method yet, using emailUpdated
     } catch (_) {}
 
     // Instant Redis-backed update: decrement total quickly, then background resync
@@ -525,14 +553,22 @@ router.get('/threads', requireAuth, async (req, res) => {
       });
       const msgs = t.data.messages || [];
       const latest = msgs[msgs.length - 1];
-      const headers = latest?.payload?.headers || [];
+      // Determine original sender: earliest inbound message (not SENT), fallback to first
+      const firstInbound = msgs.find(m => !(m.labelIds || []).includes('SENT')) || msgs[0];
+      const originHeaders = firstInbound?.payload?.headers || [];
+      const originFrom = headerValue(originHeaders, 'From');
+      const latestHeaders = latest?.payload?.headers || [];
+      const latestFrom = headerValue(latestHeaders, 'From');
       return latest ? {
         threadId: t.data.id,
         id: latest.id,
-        subject: headerValue(headers, 'Subject'),
-        from: headerValue(headers, 'From'),
-        to: headerValue(headers, 'To'),
-        date: headerValue(headers, 'Date'),
+        subject: headerValue(latestHeaders, 'Subject'),
+        // For backward compatibility, set from to origin sender and also expose both fields
+        from: originFrom,
+        originFrom,
+        latestFrom,
+        to: headerValue(latestHeaders, 'To'),
+        date: headerValue(latestHeaders, 'Date'),
         snippet: latest.snippet,
         labelIds: latest.labelIds,
         isUnread: (latest.labelIds || []).includes('UNREAD')

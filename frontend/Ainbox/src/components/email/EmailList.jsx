@@ -22,6 +22,7 @@ import {
   DropdownMenuTrigger,
 } from '../ui/dropdown-menu'
 import { generateAvatarProps, hasValidAvatar } from '../../utils/avatarUtils'
+import { getInboxDisplayName, getInboxAvatarProps, getCurrentUserEmail } from '../../utils/emailDisplay'
 
 // No more mock data - using real API data
 
@@ -44,6 +45,14 @@ export default function EmailList({
   onLoadPrev
 }) {
   const [selectAll, setSelectAll] = useState(false)
+  const [currentUserEmail, setCurrentUserEmail] = useState(null)
+
+  // Get current user email for display logic
+  useEffect(() => {
+    getCurrentUserEmail().then(email => {
+      setCurrentUserEmail(email)
+    })
+  }, [])
 
   const filteredEmails = emails
   const pageSize = 50
@@ -256,11 +265,18 @@ export default function EmailList({
                 <Avatar className="w-10 h-10 flex-shrink-0">
                   {hasValidAvatar(email.avatar) && <AvatarImage src={email.avatar} />}
                   <AvatarFallback className={cn(
-                    generateAvatarProps(email.from, email.fromEmail).colorClass,
-                    generateAvatarProps(email.from, email.fromEmail).textColor,
+                    (() => {
+                      const avatarProps = getInboxAvatarProps(email, currentUserEmail)
+                      const generated = generateAvatarProps(avatarProps.name, avatarProps.email)
+                      return `${generated.colorClass} ${generated.textColor}`
+                    })(),
                     "text-sm font-medium"
                   )}>
-                    {generateAvatarProps(email.from, email.fromEmail).initials}
+                    {(() => {
+                      const avatarProps = getInboxAvatarProps(email, currentUserEmail)
+                      const generated = generateAvatarProps(avatarProps.name, avatarProps.email)
+                      return generated.initials
+                    })()}
                   </AvatarFallback>
                 </Avatar>
 
@@ -271,7 +287,7 @@ export default function EmailList({
                       "font-medium text-gray-900 truncate",
                       !email.isRead && "font-semibold"
                     )}>
-                      {email.from}
+                      {getInboxDisplayName(email, currentUserEmail)}
                     </span>
                     {email.labels.map((label, idx) => (
                       <Badge key={`${email.id}-${label}-${idx}`} variant={getLabelVariant(label)} className="text-xs">

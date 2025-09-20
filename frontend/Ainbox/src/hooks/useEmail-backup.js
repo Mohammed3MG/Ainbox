@@ -347,8 +347,20 @@ export function useEmail() {
           if (typeof update.total === 'number') setTotal(update.total)
           break
         case 'email_updated': {
-          // Skip - handled by Socket.IO now to prevent duplicate updates
-          console.log('📧 SSE email_updated event (skipped - using Socket.IO)')
+          const up = update.email || {}
+          const upId = up.id
+          setEmails(prev => prev.map(email => {
+            const match = upId && (
+              email.id === upId ||
+              email.threadId === upId ||
+              email.messageId === upId ||
+              email.conversationId === upId
+            )
+            if (!match) return email
+            const next = { ...email }
+            if (typeof up.isRead === 'boolean') next.isRead = up.isRead
+            return next
+          }))
           break
         }
         case 'email_deleted':
@@ -371,30 +383,15 @@ export function useEmail() {
 
   // Real-time Socket.IO service for instant email state updates
   useEffect(() => {
-    // Track page load time for conflict prevention
-    if (!window.pageLoadTime) {
-      window.pageLoadTime = Date.now()
-    }
-
     // Connect to Socket.IO service for immediate updates
     // Note: userId should come from authentication context
     const userId = 1; // TODO: Get from auth context
     socketService.connect(userId, 'auth-token')
 
-    // Listen for email state updates with conflict prevention
+    // Listen for email state updates
     const unsubscribeEmailUpdated = socketService.addEventListener('emailUpdated', (data) => {
       if (data.emailId) {
         console.log('📧 Socket.IO email update received:', data.emailId, 'isRead:', data.isRead, 'source:', data.source)
-
-        // Skip external changes that might conflict with recent user actions
-        if (data.source === 'external_change') {
-          // Simple time-based conflict avoidance - ignore external changes for 2 seconds after page load
-          const timeSinceLoad = Date.now() - (window.pageLoadTime || 0)
-          if (timeSinceLoad < 2000) {
-            console.log('🚫 Ignoring external change - too soon after page load')
-            return
-          }
-        }
 
         // Update specific email immediately
         setEmails(prev => prev.map(email => {
@@ -410,6 +407,27 @@ export function useEmail() {
           console.log('✅ Updated email in list:', data.emailId, 'isRead:', data.isRead)
           return next
         }))
+
+        // If this is an external change and we couldn't find the email in current list,
+        // refresh the entire list to ensure we have the latest data
+        if (data.source === 'external_change') {
+          setTimeout(() => {
+            setEmails(prev => {
+              const foundEmail = prev.find(email =>
+                email.id === data.emailId ||
+                email.threadId === data.emailId ||
+                email.messageId === data.emailId ||
+                email.conversationId === data.emailId
+              )
+              if (!foundEmail) {
+                console.log('🔄 Email not found in current list, refreshing...')
+                clearEmailCache()
+                loadEmails('inbox', null, '', true).catch(console.error)
+              }
+              return prev
+            })
+          }, 200)
+        }
       }
     })
 
@@ -419,9 +437,23 @@ export function useEmail() {
       if (typeof data.total === 'number') setTotal(data.total)
       console.log('📊 Socket.IO count updated:', data)
 
-      // Skip aggressive refreshing to prevent conflicts
+      // If this is an external change, force refresh the email list to show correct read states
       if (data.source === 'external_change') {
-        console.log('📊 External count change - individual emails handled by Socket.IO')
+        console.log('🔄 External change detected, force refreshing email list...')
+
+        // Clear cache aggressively
+        clearEmailCache()
+
+        // Force immediate refresh without any delay
+        loadEmails('inbox', null, '', true).then(() => {
+          console.log('✅ Email list force refreshed after external change')
+        }).catch(error => {
+          console.error('❌ Failed to force refresh email list:', error)
+          // Retry once if failed
+          setTimeout(() => {
+            loadEmails('inbox', null, '', true).catch(console.error)
+          }, 500)
+        })
       }
     })
 

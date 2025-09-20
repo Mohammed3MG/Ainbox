@@ -1,7 +1,7 @@
 // Gmail synchronization API service
 const API_BASE = process.env.NODE_ENV === 'production'
   ? 'https://yourdomain.com'
-  : 'http://localhost:3000';
+  : 'http://localhost:3002';
 
 class GmailSyncService {
   constructor() {
@@ -146,6 +146,13 @@ class GmailSyncService {
                 unread: data.unread,
                 total: data.total,
                 source: data.source || 'external_change',
+                timestamp: data.timestamp
+              });
+              break;
+            case 'email_updated':
+              this.notifyListeners('emailUpdated', {
+                emailId: data.email?.id,
+                isRead: data.email?.isRead,
                 timestamp: data.timestamp
               });
               break;

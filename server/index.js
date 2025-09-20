@@ -19,6 +19,7 @@ const cookieParser = require('cookie-parser');
 const apiV1 = require('./routes/api_v1');
 const aiRoutes = require('./routes/ai');
 const syncRoutes = require('./routes/sync');
+const socketIOService = require('./lib/socketio');
 
 // Import new scaling components (optional - fallback if not available)
 let connectionManager, smartCache, jobQueue, rateLimiter;
@@ -139,7 +140,7 @@ async function startHttp(app) {
   for (let i = 0; i < maxTries; i++) {
     const port = base + i;
     try {
-      await new Promise((resolve, reject) => {
+      const server = await new Promise((resolve, reject) => {
         const srv = http.createServer(app);
         srv.once('error', (err) => {
           if (err && err.code === 'EADDRINUSE') {
@@ -152,10 +153,15 @@ async function startHttp(app) {
         });
         srv.listen(port, () => {
           console.log(`✅ HTTP server running at http://localhost:${port}`);
-          resolve();
+          resolve(srv);
         });
       });
-      return; // started
+
+      // Initialize Socket.IO with the HTTP server
+      socketIOService.initialize(server);
+      console.log(`🚀 Socket.IO initialized on HTTP server port ${port}`);
+
+      return server; // Return server instance
     } catch (e) {
       if (!(e && e.code === 'EADDRINUSE')) throw e;
       // else try next port
