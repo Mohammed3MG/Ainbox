@@ -791,14 +791,29 @@ export function subscribeToEmailUpdates(onUpdate) {
 }
 
 // Utility functions
-export function formatEmailForDisplay(email) {
+export function formatEmailForDisplay(raw) {
+  const id = raw.id ?? raw.threadId ?? raw.messageId ?? raw.gmailMessageId ?? raw.gmailThreadId;
+  const labels = Array.isArray(raw.labels)
+    ? raw.labels.slice()
+    : Array.isArray(raw.labelIds)
+      ? raw.labelIds.slice()
+      : [];
+  const isRead = typeof raw.isRead === 'boolean' ? raw.isRead : !labels.includes('UNREAD');
+
   return {
-    ...email,
-    date: new Date(email.date),
-    formattedDate: formatTimeFromDate(email.date),
-    preview: email.preview || email.body?.substring(0, 150) + '...',
-    senderName: email.from || 'Unknown',
-    senderEmail: email.fromEmail || 'unknown@email.com'
+    ...raw,
+    id,
+    threadId: raw.threadId,
+    messageId: raw.messageId,
+    gmailMessageId: raw.gmailMessageId,
+    gmailThreadId: raw.gmailThreadId,
+    labels,
+    isRead,
+    date: new Date(raw.date),
+    formattedDate: formatTimeFromDate(raw.date),
+    preview: raw.preview || raw.body?.substring(0, 150) + '...',
+    senderName: raw.from || 'Unknown',
+    senderEmail: raw.fromEmail || 'unknown@email.com'
   }
 }
 

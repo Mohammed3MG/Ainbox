@@ -20,6 +20,30 @@ import {
 import socketService from '../services/socketApi'
 import { useRealTimeEmailBridge } from '../components/email/RealTimeEmailBridge'
 
+// ✅ Helpers for matching and updating read status
+function matchesEmailByAnyId(email, anyId) {
+  if (!anyId) return false;
+  return (
+    email.id === anyId ||
+    email.threadId === anyId ||
+    email.messageId === anyId ||
+    email.conversationId === anyId ||
+    email.gmailMessageId === anyId ||
+    email.gmailThreadId === anyId
+  );
+}
+
+function applyReadFlagAndLabels(email, isRead) {
+  const next = { ...email, isRead: !!isRead };
+  if (Array.isArray(email.labels)) {
+    const hasUnread = email.labels.includes('UNREAD');
+    if (isRead && hasUnread) next.labels = email.labels.filter(l => l !== 'UNREAD');
+    else if (!isRead && !hasUnread) next.labels = [...email.labels, 'UNREAD'];
+    else next.labels = email.labels.slice();
+  }
+  return next;
+}
+
 export function useEmail() {
   const [emails, setEmails] = useState([])
   const [loading, setLoading] = useState(false)
@@ -34,6 +58,32 @@ export function useEmail() {
   const [unreadCount, setUnreadCount] = useState(0)
   const [spamUnreadCount, setSpamUnreadCount] = useState(0)
   const unsubscribeRef = useRef(null)
+
+
+    function matchesEmailByAnyId(email, anyId) {
+  if (!anyId) return false;
+  return (
+    email.id === anyId ||
+    email.threadId === anyId ||
+    email.messageId === anyId ||
+    email.conversationId === anyId ||
+    email.gmailMessageId === anyId ||
+    email.gmailThreadId === anyId
+  );
+}
+
+function applyReadFlagAndLabels(email, isRead) {
+  const next = { ...email, isRead: !!isRead };
+  if (Array.isArray(email.labels)) {
+    const hasUnread = email.labels.includes('UNREAD');
+    if (isRead && hasUnread) next.labels = email.labels.filter(l => l !== 'UNREAD');
+    else if (!isRead && !hasUnread) next.labels = [...email.labels, 'UNREAD'];
+    else next.labels = email.labels.slice();
+  }
+  return next;
+}
+
+
 
   // Load emails for a specific folder
   const loadEmails = useCallback(withErrorHandling(async (folder = 'inbox', pageOrCursor = 1, search = '', _replace = true) => {
@@ -74,8 +124,7 @@ export function useEmail() {
         const knownEnd = (res?.emails?.length || 0)
         return Math.max(apiTotal, knownEnd)
       })
-      // Load stats: always fetch spam count so badge shows immediately
-      // and fetch inbox counts when viewing inbox
+      // Load stats
       try {
         const s = await getSpamStats()
         setSpamUnreadCount(s.unread || 0)
@@ -84,8 +133,6 @@ export function useEmail() {
         const stats = await getInboxStats()
         setUnreadCount(stats.unread || 0)
         if (Number.isFinite(stats.total)) setTotal(stats.total)
-      } else if (folder === 'spam') {
-        // already fetched spam stats above
       }
     } catch (_) { /* state already set in loadEmails */ }
   }, [loadEmails])
@@ -145,7 +192,6 @@ export function useEmail() {
       })
       setTotal(prev => {
         const apiTotal = Number.isFinite(res?.total) ? res.total : 0
-        // Keep maximum to avoid shrinking due to estimates
         return Math.max(prev || 0, apiTotal)
       })
       if (folder === 'inbox') {
@@ -159,6 +205,7 @@ export function useEmail() {
     } catch (_) { /* already handled */ }
   }, [loading, currentPage, pageCursors, loadEmails])
 
+
   // Search emails
   const searchEmailsWithFilters = useCallback(withErrorHandling(async (query, filters = {}) => {
     setLoading(true)
@@ -169,7 +216,7 @@ export function useEmail() {
       const formattedEmails = response.emails.map(formatEmailForDisplay)
       setEmails(formattedEmails)
       setTotal(response.total)
-      setHasMore(false) // Search results are usually complete
+      setHasMore(false)
       setCurrentPage(1)
       setPageCursors([null])
       setPageNextCursors([null])
@@ -228,7 +275,7 @@ export function useEmail() {
           case 'archive':
           case 'delete':
             if (!email.isRead) unreadDelta -= 1
-            return null // Will be filtered out
+            return null
           default:
             return email
         }
@@ -257,7 +304,6 @@ export function useEmail() {
       switch (action) {
         case 'read':
           markEmailAsRead(ids).then(result => {
-            // Update counts immediately if returned from server
             if (result.immediateUpdate && result.newCounts) {
               setUnreadCount(result.newCounts.unread)
               setTotal(result.newCounts.total)
@@ -270,7 +316,6 @@ export function useEmail() {
           break
         case 'unread':
           markEmailAsUnread(ids).then(result => {
-            // Update counts immediately if returned from server
             if (result.immediateUpdate && result.newCounts) {
               setUnreadCount(result.newCounts.unread)
               setTotal(result.newCounts.total)
@@ -334,30 +379,26 @@ export function useEmail() {
     }
   }), [])
 
-  // Real-time updates
+  // Real-time updates (legacy SSE -> we keep only count updates to avoid double-processing)
   useEffect(() => {
     const unsubscribe = subscribeToEmailUpdates((update) => {
       switch (update.type) {
-        case 'new_email': {
-          // Skip - handled by Socket.IO now to prevent duplicate updates
-          console.log('📨 SSE new_email event (skipped - using Socket.IO)')
+        case 'new_email':
+          // Skipped - handled by Socket.IO / Bridge
           break
-        }
         case 'unread_count_updated':
           if (typeof update.unread === 'number') setUnreadCount(update.unread)
           if (typeof update.total === 'number') setTotal(update.total)
           break
-        case 'email_updated': {
-          // Skip - handled by Socket.IO now to prevent duplicate updates
-          console.log('📧 SSE email_updated event (skipped - using Socket.IO)')
+        case 'email_updated':
+          // Skipped - handled by Socket.IO / Bridge
           break
-        }
         case 'email_deleted':
           setEmails(prev => prev.filter(email => email.id !== update.emailId))
           setTotal(prev => Math.max(0, prev - 1))
           break
         default:
-          console.log('Unknown email update type:', update.type)
+          break
       }
     })
 
@@ -372,168 +413,75 @@ export function useEmail() {
 
   // Real-time Socket.IO service for instant email state updates
   useEffect(() => {
-    // Track page load time for conflict prevention
-    if (!window.pageLoadTime) {
-      window.pageLoadTime = Date.now()
-    }
+    if (!window.pageLoadTime) window.pageLoadTime = Date.now()
 
-    // Connect to Socket.IO service for immediate updates
-    // Note: userId should come from authentication context
-    const userId = 1; // TODO: Get from auth context
-    console.log('🔌 [HOOK] Connecting to Socket.IO service...');
+    const userId = 1; // TODO: replace with real user id from auth
+    console.log('🔌 [HOOK] Connecting to Socket.IO service...')
     socketService.connect(userId, 'auth-token')
-    console.log('🔌 [HOOK] Socket.IO connection initiated');
+    console.log('🔌 [HOOK] Socket.IO connection initiated')
 
-    // Listen for email state updates with conflict prevention
     const unsubscribeEmailUpdated = socketService.addEventListener('emailUpdated', (data) => {
-      if (data.emailId) {
-        console.log('📧 Socket.IO email update received:', data.emailId, 'isRead:', data.isRead, 'source:', data.source)
+      const incomingId =
+        data.emailId || data.gmailMessageId || data.messageId || data.threadId || data.conversationId;
+      if (!incomingId) return;
 
-        // Skip external changes that might conflict with recent user actions
-        if (data.source === 'external_change') {
-          // Simple time-based conflict avoidance - ignore external changes for 2 seconds after page load
-          const timeSinceLoad = Date.now() - (window.pageLoadTime || 0)
-          if (timeSinceLoad < 2000) {
-            console.log('🚫 Ignoring external change - too soon after page load')
-            return
+      setEmails(prev =>
+        prev.map(email => {
+          if (!matchesEmailByAnyId(email, incomingId)) return email;
+          if (typeof data.isRead === 'boolean') {
+            return applyReadFlagAndLabels(email, data.isRead);
           }
-        }
-
-        // Update specific email immediately
-        setEmails(prev => prev.map(email => {
-          const match = data.emailId && (
-            email.id === data.emailId ||
-            email.threadId === data.emailId ||
-            email.messageId === data.emailId ||
-            email.conversationId === data.emailId
-          )
-          if (!match) return email
-          const next = { ...email }
-          if (typeof data.isRead === 'boolean') next.isRead = data.isRead
-          console.log('✅ Updated email in list:', data.emailId, 'isRead:', data.isRead)
-          return next
-        }))
-      }
+          return email;
+        })
+      );
     })
 
-    // Listen for count updates
     const unsubscribeCountUpdate = socketService.addEventListener('unreadCountUpdate', (data) => {
       if (typeof data.unread === 'number') setUnreadCount(data.unread)
       if (typeof data.total === 'number') setTotal(data.total)
-      console.log('📊 Socket.IO count updated:', data)
+    })
 
-      // Skip aggressive refreshing to prevent conflicts
-      if (data.source === 'external_change') {
-        console.log('📊 External count change - individual emails handled by Socket.IO')
+    const unsubscribeNewEmail = socketService.addEventListener('newEmail', (data) => {
+      if (data.email) {
+        const formattedEmail = formatEmailForDisplay(data.email)
+        setEmails(prev => [formattedEmail, ...prev])
+        setTotal(prev => prev + 1)
+        if (!formattedEmail.isRead) setUnreadCount(prev => prev + 1)
       }
     })
 
-    // Listen for new email arrivals
-    const unsubscribeNewEmail = socketService.addEventListener('newEmail', (data) => {
-      console.log('🎯 [NEW EMAIL] Socket.IO new email event received!', data);
-
-      if (data.email) {
-        const formattedEmail = formatEmailForDisplay(data.email);
-        console.log('🎯 [NEW EMAIL] Formatted email:', formattedEmail);
-
-        // Add new email to the top of the inbox with unread status
-        setEmails(prev => {
-          console.log('🎯 [NEW EMAIL] Adding to emails. Current count:', prev.length);
-          const newEmails = [formattedEmail, ...prev];
-          console.log('🎯 [NEW EMAIL] New emails count:', newEmails.length);
-          return newEmails;
-        });
-        setTotal(prev => {
-          console.log('🎯 [NEW EMAIL] Updating total from', prev, 'to', prev + 1);
-          return prev + 1;
-        });
-
-        // Increment unread count if the email is unread
-        if (!formattedEmail.isRead) {
-          setUnreadCount(prev => {
-            console.log('🎯 [NEW EMAIL] Updating unread count from', prev, 'to', prev + 1);
-            return prev + 1;
-          });
-        }
-
-        console.log('✅ [NEW EMAIL] Successfully added new email to inbox:', formattedEmail.id, 'isRead:', formattedEmail.isRead);
-      } else {
-        console.warn('⚠️ [NEW EMAIL] No email data in newEmail event');
-      }
-    });
-
-    // Listen for email deletions
     const unsubscribeEmailDeleted = socketService.addEventListener('emailDeleted', (data) => {
-      console.log('🗑️ [EMAIL DELETED] Socket.IO email deletion received!', data);
-
       if (data.emailId) {
-        // Remove deleted email from the list
-        setEmails(prev => {
-          const beforeCount = prev.length;
-          const filtered = prev.filter(email => {
-            // Match by any of the possible ID fields
-            return !(
-              email.id === data.emailId ||
-              email.threadId === data.emailId ||
-              email.messageId === data.emailId ||
-              email.conversationId === data.emailId
-            );
-          });
-          const afterCount = filtered.length;
-          console.log(`🗑️ [EMAIL DELETED] Removed email from list. Before: ${beforeCount}, After: ${afterCount}`);
-          return filtered;
-        });
-
-        // Update total count
-        setTotal(prev => {
-          const newTotal = Math.max(0, prev - 1);
-          console.log(`🗑️ [EMAIL DELETED] Updated total count from ${prev} to ${newTotal}`);
-          return newTotal;
-        });
-
-        console.log(`✅ [EMAIL DELETED] Successfully removed email ${data.emailId} from inbox`);
-      } else {
-        console.warn('⚠️ [EMAIL DELETED] No emailId in deletion event');
+        setEmails(prev => prev.filter(email => !(
+          email.id === data.emailId ||
+          email.threadId === data.emailId ||
+          email.messageId === data.emailId ||
+          email.conversationId === data.emailId
+        )))
+        setTotal(prev => Math.max(0, prev - 1))
       }
-    });
+    })
 
-    // Listen for bidirectional email action broadcasts from other sessions
     const unsubscribeActionBroadcast = socketService.addEventListener('emailActionBroadcast', (data) => {
-      console.log('📡 Socket.IO action broadcast received:', data);
-
-      // Apply the action from another session/device
       if (data.action && data.emailIds) {
-        console.log(`🔄 Applying broadcasted action: ${data.action} on ${data.emailIds.length} emails`);
-
-        // Update local state to match the broadcasted action
         setEmails(prev => prev.map(email => {
           const matches = data.emailIds.includes(email.id) ||
                           data.emailIds.includes(email.threadId) ||
-                          data.emailIds.includes(email.messageId);
-
+                          data.emailIds.includes(email.messageId)
           if (matches) {
-            const updated = { ...email };
+            const updated = { ...email }
             switch (data.action) {
-              case 'read':
-                updated.isRead = true;
-                break;
-              case 'unread':
-                updated.isRead = false;
-                break;
-              case 'star':
-                updated.isStarred = true;
-                break;
-              case 'unstar':
-                updated.isStarred = false;
-                break;
+              case 'read':   updated.isRead = true; break
+              case 'unread': updated.isRead = false; break
+              case 'star':   updated.isStarred = true; break
+              case 'unstar': updated.isStarred = false; break
             }
-            console.log(`✅ Applied ${data.action} to email ${email.id}`);
-            return updated;
+            return updated
           }
-          return email;
-        }));
+          return email
+        }))
       }
-    });
+    })
 
     return () => {
       unsubscribeEmailUpdated()
@@ -546,68 +494,55 @@ export function useEmail() {
 
   // Real-Time Email Bridge Integration (Gmail Pub/Sub → React State)
   useRealTimeEmailBridge(
-    // Handle immediate email status updates from Gmail Pub/Sub
+    // 1) Immediate email status updates
     (data) => {
-      console.log('🌉 Bridge→React: Immediate email status update:', data);
+      const incomingId =
+        data.emailId || data.gmailMessageId || data.messageId || data.threadId || data.conversationId;
+      if (!incomingId) return;
 
-      setEmails(prev => prev.map(email => {
-        const match = data.emailId && (
-          email.id === data.emailId ||
-          email.threadId === data.emailId ||
-          email.messageId === data.emailId ||
-          email.conversationId === data.emailId
-        );
+      setEmails(prev =>
+        prev.map(email => {
+          if (!matchesEmailByAnyId(email, incomingId)) return email;
+          if (typeof data.isRead === 'boolean') {
+            return applyReadFlagAndLabels(email, data.isRead);
+          }
+          return email;
+        })
+      );
 
-        if (match) {
-          console.log('✅ Bridge→React: Updating email in state:', data.emailId, 'isRead:', data.isRead);
-          return { ...email, isRead: data.isRead };
-        }
-        return email;
-      }));
-
-      // Update unread count based on status change
       if (typeof data.isRead === 'boolean') {
-        setUnreadCount(prev => {
-          const delta = data.isRead ? -1 : 1;
-          return Math.max(0, prev + delta);
-        });
+        setUnreadCount(prev => Math.max(0, prev + (data.isRead ? -1 : 1)));
       }
     },
-    // Handle new emails from Gmail Pub/Sub
+    // 2) New emails
     (data) => {
-      console.log('🌉 Bridge→React: New email from Pub/Sub:', data);
       if (data.email) {
-        const formattedEmail = formatEmailForDisplay(data.email);
-        setEmails(prev => [formattedEmail, ...prev]);
-        setTotal(prev => prev + 1);
-        if (!formattedEmail.isRead) {
-          setUnreadCount(prev => prev + 1);
-        }
+        const formattedEmail = formatEmailForDisplay(data.email)
+        setEmails(prev => [formattedEmail, ...prev])
+        setTotal(prev => prev + 1)
+        if (!formattedEmail.isRead) setUnreadCount(prev => prev + 1)
       }
     },
-    // Handle email deletions from Gmail Pub/Sub
+    // 3) Deletions
     (data) => {
-      console.log('🌉 Bridge→React: Email deletion from Pub/Sub:', data);
-      setEmails(prev => prev.filter(email => {
-        return !(
-          email.id === data.emailId ||
-          email.threadId === data.emailId ||
-          email.messageId === data.emailId ||
-          email.conversationId === data.emailId
-        );
-      }));
-      setTotal(prev => Math.max(0, prev - 1));
+      setEmails(prev => prev.filter(email => !(
+        email.id === data.emailId ||
+        email.threadId === data.emailId ||
+        email.messageId === data.emailId ||
+        email.conversationId === data.emailId
+      )))
+      setTotal(prev => Math.max(0, prev - 1))
+    },
+    // 4) 🔴 Live unread count from backend aggregation (authoritative)
+    ({ count }) => {
+      if (typeof count === 'number') setUnreadCount(count)
     }
   )
 
   // Keyboard shortcuts
   useEffect(() => {
     const handleKeyDown = (event) => {
-      // Only handle shortcuts when not typing in an input
-      if (event.target.tagName === 'INPUT' || event.target.tagName === 'TEXTAREA') {
-        return
-      }
-
+      if (event.target.tagName === 'INPUT' || event.target.tagName === 'TEXTAREA') return
       switch (event.key) {
         case 'a':
           if (event.ctrlKey || event.metaKey) {
@@ -619,30 +554,20 @@ export function useEmail() {
           clearSelection()
           break
         case 'e':
-          if (selectedEmails.size > 0) {
-            performEmailAction('archive', Array.from(selectedEmails))
-          }
+          if (selectedEmails.size > 0) performEmailAction('archive', Array.from(selectedEmails))
           break
         case 'r':
-          if (selectedEmails.size > 0) {
-            performEmailAction('read', Array.from(selectedEmails))
-          }
+          if (selectedEmails.size > 0) performEmailAction('read', Array.from(selectedEmails))
           break
         case 'U':
-          if (selectedEmails.size > 0) {
-            performEmailAction('unread', Array.from(selectedEmails))
-          }
+          if (selectedEmails.size > 0) performEmailAction('unread', Array.from(selectedEmails))
           break
         case 'Delete':
         case 'Backspace':
-          if (selectedEmails.size > 0) {
-            performEmailAction('delete', Array.from(selectedEmails))
-          }
+          if (selectedEmails.size > 0) performEmailAction('delete', Array.from(selectedEmails))
           break
         case 's':
-          if (selectedEmails.size > 0) {
-            performEmailAction('star', Array.from(selectedEmails))
-          }
+          if (selectedEmails.size > 0) performEmailAction('star', Array.from(selectedEmails))
           break
         default:
           break
@@ -650,10 +575,7 @@ export function useEmail() {
     }
 
     document.addEventListener('keydown', handleKeyDown)
-
-    return () => {
-      document.removeEventListener('keydown', handleKeyDown)
-    }
+    return () => document.removeEventListener('keydown', handleKeyDown)
   }, [selectedEmails, selectAllEmails, clearSelection, performEmailAction])
 
   return {

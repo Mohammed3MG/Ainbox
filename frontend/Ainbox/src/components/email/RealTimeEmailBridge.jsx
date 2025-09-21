@@ -1,160 +1,162 @@
+// Ainbox/frontend/Ainbox/src/components/email/RealTimeEmailBridge.jsx
 import { useEffect } from 'react';
 import gmailSyncService from '../../services/syncApi.js';
 
 /**
  * Bridge component to connect Gmail Pub/Sub real-time updates with React state
- * This component bridges the gap between:
- * 1. Gmail Pub/Sub → SSE → syncApi.js (immediate UI updates)
- * 2. React state management in useEmail hook
+ * FIXES:
+ *  - Always dispatch updates (no DOM gating)
+ *  - Safe subscribe/unsubscribe
+ *  - Do NOT tear down global SSE on unmount
+ *  - Prefer connectToSSE() to avoid duplicate watches
+ *  - Bridges unread-count updates
  */
 export default function RealTimeEmailBridge() {
   useEffect(() => {
     console.log('🌉 Initializing Real-Time Email Bridge');
 
-    // Set up automatic UI updates for immediate visual feedback
-    gmailSyncService.setupAutoUIUpdates();
+    // Ensure SSE/stream is connected (idempotent)
+    try {
+      if (typeof gmailSyncService.connectToSSE === 'function') {
+        gmailSyncService.connectToSSE();
+      } else if (typeof gmailSyncService.startSync === 'function') {
+        gmailSyncService
+          .startSync()
+          .then(() => {
+            console.log('✅ Gmail Pub/Sub sync started successfully');
+          })
+          .catch((error) => {
+            console.error('❌ Failed to start Gmail Pub/Sub sync:', error);
+          });
+      }
+    } catch (e) {
+      console.warn('⚠️ Could not ensure SSE connection:', e);
+    }
 
-    // Start Gmail Pub/Sub sync
-    gmailSyncService.startSync().then(() => {
-      console.log('✅ Gmail Pub/Sub sync started successfully');
-    }).catch(error => {
-      console.error('❌ Failed to start Gmail Pub/Sub sync:', error);
-    });
-
-    // Bridge Gmail Pub/Sub immediate updates with React state
+    // ---- Event handlers (no DOM checks; always notify React) ----
     const handleImmediateEmailUpdate = (data) => {
-      console.log('⚡ Bridge: Immediate email update received:', data);
-
-      // Update React state for email items that exist in the DOM
-      const emailElements = document.querySelectorAll(`[data-message-id="${data.messageId}"]`);
-
-      if (emailElements.length > 0) {
-        console.log(`⚡ Bridge: Found ${emailElements.length} email elements to update`);
-
-        // Trigger React state update by dispatching a custom event
-        const reactUpdateEvent = new CustomEvent('reactEmailStatusUpdate', {
+      window.dispatchEvent(
+        new CustomEvent('reactEmailStatusUpdate', {
           detail: {
             emailId: data.messageId,
             isRead: data.isRead,
             changeType: data.changeType,
             source: 'pubsub_immediate',
-            timestamp: data.timestamp
-          }
-        });
+            timestamp: data.timestamp,
+          },
+        }),
+      );
+    };
 
-        window.dispatchEvent(reactUpdateEvent);
-      } else {
-        console.warn(`⚠️ Bridge: No email elements found for message ID: ${data.messageId}`);
+    const handleEmailUpdated = (data) => {
+      if (data?.changeType === 'added') {
+        window.dispatchEvent(
+          new CustomEvent('reactNewEmail', {
+            detail: {
+              email: data.emailDetail ?? data.email ?? null,
+              timestamp: data.timestamp,
+            },
+          }),
+        );
+      } else if (data?.changeType === 'deleted') {
+        window.dispatchEvent(
+          new CustomEvent('reactEmailDeleted', {
+            detail: {
+              emailId: data.messageId ?? data.emailId,
+              timestamp: data.timestamp,
+            },
+          }),
+        );
       }
     };
 
-    // Listen for immediate email status updates from Gmail Pub/Sub
-    const unsubscribeImmediate = gmailSyncService.addEventListener(
-      'emailStatusUpdatedImmediate',
-      handleImmediateEmailUpdate
-    );
-
-    // Handle new email arrivals
-    const handleNewEmailUpdate = (data) => {
-      console.log('📧 Bridge: New email update received:', data);
-
-      // Dispatch React event for new emails
-      const newEmailEvent = new CustomEvent('reactNewEmail', {
-        detail: {
-          email: data.emailDetail,
-          timestamp: data.timestamp
-        }
-      });
-
-      window.dispatchEvent(newEmailEvent);
+    const handleUnreadCount = (data) => {
+      // Expecting shape { count, labelId?, timestamp? }
+      if (typeof data?.count === 'number') {
+        window.dispatchEvent(
+          new CustomEvent('reactUnreadCount', {
+            detail: {
+              count: data.count,
+              labelId: data.labelId,
+              timestamp: data.timestamp,
+            },
+          }),
+        );
+      }
     };
 
-    // Listen for new email updates
-    const unsubscribeNewEmail = gmailSyncService.addEventListener(
-      'emailUpdated',
-      (data) => {
-        if (data.changeType === 'added') {
-          handleNewEmailUpdate(data);
+    // ---- Subscribe safely (supports "unsubscribe fn" OR removeEventListener) ----
+    const subs = [];
+
+    const safeAdd = (eventName, handler) => {
+      let unsub;
+      try {
+        if (typeof gmailSyncService.addEventListener === 'function') {
+          unsub = gmailSyncService.addEventListener(eventName, handler);
         }
+      } catch (e) {
+        console.warn(`⚠️ addEventListener failed for ${eventName}:`, e);
       }
-    );
-
-    // Handle email deletions
-    const handleEmailDeletion = (data) => {
-      console.log('🗑️ Bridge: Email deletion received:', data);
-
-      // Dispatch React event for email deletions
-      const deleteEmailEvent = new CustomEvent('reactEmailDeleted', {
-        detail: {
-          emailId: data.messageId,
-          timestamp: data.timestamp
-        }
-      });
-
-      window.dispatchEvent(deleteEmailEvent);
+      subs.push({ eventName, handler, unsub });
     };
 
-    // Listen for email deletions
-    const unsubscribeDeleteEmail = gmailSyncService.addEventListener(
-      'emailUpdated',
-      (data) => {
-        if (data.changeType === 'deleted') {
-          handleEmailDeletion(data);
-        }
-      }
-    );
+    safeAdd('emailStatusUpdatedImmediate', handleImmediateEmailUpdate);
+    safeAdd('emailUpdated', handleEmailUpdated);
+    safeAdd('unreadCountUpdate', handleUnreadCount);
 
     console.log('✅ Real-Time Email Bridge initialized');
 
-    // Cleanup
+    // Cleanup: remove only our listeners (do NOT close global SSE/socket)
     return () => {
       console.log('🧹 Cleaning up Real-Time Email Bridge');
-      unsubscribeImmediate();
-      unsubscribeNewEmail();
-      unsubscribeDeleteEmail();
-      gmailSyncService.cleanup();
+      for (const s of subs) {
+        try {
+          if (typeof s.unsub === 'function') {
+            s.unsub();
+          } else if (typeof gmailSyncService.removeEventListener === 'function') {
+            gmailSyncService.removeEventListener(s.eventName, s.handler);
+          }
+        } catch (e) {
+          console.warn(`⚠️ Unsubscribe failed for ${s.eventName}:`, e);
+        }
+      }
+      // IMPORTANT: do NOT call gmailSyncService.cleanup() here —
+      // it would kill realtime for the whole app.
     };
   }, []);
 
-  // This is a bridge component - no UI needed
-  return null;
+  return null; // no UI
 }
 
 /**
  * Hook to integrate with the Real-Time Email Bridge
- * Use this in your email components that need real-time updates
+ * Added support for unread count via optional 4th callback.
+ *
+ * Usage:
+ *   useRealTimeEmailBridge(onStatus, onNew, onDeleted, onUnreadCount);
  */
-export function useRealTimeEmailBridge(onEmailStatusUpdate, onNewEmail, onEmailDeleted) {
+export function useRealTimeEmailBridge(
+  onEmailStatusUpdate,
+  onNewEmail,
+  onEmailDeleted,
+  onUnreadCountUpdate // optional
+) {
   useEffect(() => {
-    // Listen for bridged React events
-    const handleReactEmailStatusUpdate = (event) => {
-      if (onEmailStatusUpdate) {
-        onEmailStatusUpdate(event.detail);
-      }
-    };
+    const handleReactEmailStatusUpdate = (event) => onEmailStatusUpdate?.(event.detail);
+    const handleReactNewEmail = (event) => onNewEmail?.(event.detail);
+    const handleReactEmailDeleted = (event) => onEmailDeleted?.(event.detail);
+    const handleReactUnreadCount = (event) => onUnreadCountUpdate?.(event.detail);
 
-    const handleReactNewEmail = (event) => {
-      if (onNewEmail) {
-        onNewEmail(event.detail);
-      }
-    };
-
-    const handleReactEmailDeleted = (event) => {
-      if (onEmailDeleted) {
-        onEmailDeleted(event.detail);
-      }
-    };
-
-    // Add event listeners
     window.addEventListener('reactEmailStatusUpdate', handleReactEmailStatusUpdate);
     window.addEventListener('reactNewEmail', handleReactNewEmail);
     window.addEventListener('reactEmailDeleted', handleReactEmailDeleted);
+    window.addEventListener('reactUnreadCount', handleReactUnreadCount);
 
-    // Cleanup
     return () => {
       window.removeEventListener('reactEmailStatusUpdate', handleReactEmailStatusUpdate);
       window.removeEventListener('reactNewEmail', handleReactNewEmail);
       window.removeEventListener('reactEmailDeleted', handleReactEmailDeleted);
+      window.removeEventListener('reactUnreadCount', handleReactUnreadCount);
     };
-  }, [onEmailStatusUpdate, onNewEmail, onEmailDeleted]);
+  }, [onEmailStatusUpdate, onNewEmail, onEmailDeleted, onUnreadCountUpdate]);
 }

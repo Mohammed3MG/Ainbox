@@ -216,12 +216,22 @@ export default function EmailList({
 
       {/* Email list (virtualized) */}
       <div className="flex-1 overflow-hidden">
-        <VirtualList
-          height={typeof window !== 'undefined' ? Math.max(240, window.innerHeight - 240) : 600}
-          itemCount={filteredEmails.length}
-          itemSize={92}
-          width={'100%'}
-        >
+<VirtualList
+  height={typeof window !== 'undefined' ? Math.max(240, window.innerHeight - 240) : 600}
+  itemCount={filteredEmails.length}
+  itemSize={92}
+  width={'100%'}
+  overscanCount={6}
+  itemKey={(index) => {
+    const e = filteredEmails[index];
+    // Use stable identity; include read-state so a toggle forces a re-render
+    const id = e?.id ?? e?.messageId ?? index;
+    const r = e?.isRead ? 'r' : 'u';
+    return `${id}-${r}`;
+  }}
+>
+
+
           {({ index, style }) => {
             const email = filteredEmails[index]
             return (
