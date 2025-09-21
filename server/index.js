@@ -52,6 +52,12 @@ app.use(cors({
 app.use(express.json({ limit: '35mb' }));
 app.use(cookieParser());
 
+// Disable HTTP caching globally to ensure realtime freshness for dynamic endpoints
+app.use((req, res, next) => {
+  res.set('Cache-Control', 'no-store');
+  next();
+});
+
 // Add rate limiting middleware for scaling (if available)
 if (rateLimiter) {
   app.use('/gmail/', rateLimiter.createMiddleware('gmail'));

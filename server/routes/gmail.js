@@ -466,6 +466,8 @@ async function mapWithLimit(items, limit, mapper) {
 // List INBOX threads: latest message metadata only
 router.get('/threads', requireAuth, async (req, res) => {
   try {
+    // Ensure browser does not cache inbox list responses
+    res.set('Cache-Control', 'no-store');
     const userId = String(req.auth?.sub);
     const maxResults = Math.min(parseInt(req.query.maxResults || '20', 10), 50);
     const pageToken = req.query.pageToken || undefined;
@@ -475,27 +477,7 @@ router.get('/threads', requireAuth, async (req, res) => {
     // Create cache key based on request parameters
     const cacheKey = `${maxResults}:${pageToken || 'first'}:${unread}:${q || 'all'}`;
 
-    // Try to get from cache first (skip cache for search queries)
-    if (!q) {
-      const cached = await emailCache.getInbox(userId, 'gmail', 'inbox', cacheKey);
-      if (cached) {
-        console.log('📦 Serving inbox from cache');
-        // Apply local overrides to cached threads so UI reflects instant state
-        const adjustedThreads = await Promise.all((cached.threads || []).map(async (item) => {
-          if (!item) return null;
-          try {
-            const ov = await readState.getOverride(userId, 'gmail', item.threadId);
-            if (ov === 'read') return { ...item, isUnread: false };
-            if (ov === 'unread') return { ...item, isUnread: true };
-            return item;
-          } catch (_) {
-            return item;
-          }
-        }));
-        const adjusted = { ...cached, threads: adjustedThreads.filter(Boolean) };
-        return res.json(adjusted);
-      }
-    }
+    // Skip server-side inbox list cache to avoid stale lists; rely on realtime updates
 
     console.log('🔄 Fetching inbox from Gmail API');
     const oauth2Client = await getGoogleOAuthClientFromCookies(req);
@@ -590,11 +572,7 @@ router.get('/threads', requireAuth, async (req, res) => {
       total: typeof listResp.data.resultSizeEstimate === 'number' ? listResp.data.resultSizeEstimate : undefined
     };
 
-    // Cache the response (skip search queries)
-    if (!q) {
-      await emailCache.setInbox(userId, 'gmail', 'inbox', cacheKey, response);
-      console.log('💾 Cached inbox response');
-    }
+    // Do not cache inbox responses to ensure immediate freshness
 
     res.json(response);
   } catch (err) {

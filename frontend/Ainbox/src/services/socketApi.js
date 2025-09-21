@@ -1,9 +1,9 @@
 // Socket.IO real-time communication service
 import { io } from 'socket.io-client';
+import { API_BASE_URL } from '../config';
 
-const API_BASE = process.env.NODE_ENV === 'production'
-  ? 'https://yourdomain.com'
-  : 'http://localhost:3002';
+// Use the same API base as the rest of the app; Socket.IO connects to the server origin
+const API_BASE = API_BASE_URL;
 
 class SocketIOService {
   constructor() {

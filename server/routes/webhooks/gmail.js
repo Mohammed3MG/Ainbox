@@ -1,7 +1,11 @@
 const express = require('express');
 const router = express.Router();
-const gmailPubSub = require('../../lib/pubsub/gmailPubSub');
+const { google } = require('googleapis');
 const socketIOService = require('../../lib/socketio');
+const cache = require('../../lib/cache');
+const { query } = require('../../lib/db');
+const { decrypt } = require('../../utils/secure');
+const { broadcastToUser } = require('../../lib/sse');
 
 /**
  * Gmail Push Notification Webhook Endpoint
@@ -17,7 +21,9 @@ router.post('/gmail/notifications', express.raw({ type: 'application/json' }), a
 
     if (!pubsubMessage.message || !pubsubMessage.message.data) {
       console.warn('⚠️  Invalid Pub/Sub message format');
-      return res.status(400).json({ error: 'Invalid message format' });
+      // ACK immediately regardless to avoid redelivery storms
+      res.status(200).end();
+      return;
     }
 
     // Decode base64 data
@@ -31,70 +37,167 @@ router.post('/gmail/notifications', express.raw({ type: 'application/json' }), a
 
     if (!emailAddress || !historyId) {
       console.warn('⚠️  Missing required fields in Gmail notification');
-      return res.status(400).json({ error: 'Missing emailAddress or historyId' });
+      res.status(200).end();
+      return;
     }
 
-    // Find user by email address (you'll need to implement this based on your user storage)
-    const userId = await findUserByEmail(emailAddress);
+    // ACK immediately, then process asynchronously
+    res.status(200).end();
 
-    if (!userId) {
-      console.warn(`⚠️  User not found for email: ${emailAddress}`);
-      return res.status(404).json({ error: 'User not found' });
-    }
-
-    // Process the Gmail history changes
-    const result = await processGmailChanges(userId, historyId);
-
-    // Send real-time updates to frontend
-    await sendRealTimeUpdates(userId, result);
-
-    // Acknowledge the webhook
-    res.status(200).json({
-      success: true,
-      processed: result.totalChanges || 0,
-      timestamp: new Date().toISOString()
+    // Process asynchronously without blocking webhook ACK
+    setImmediate(async () => {
+      try {
+        const user = await findUserByEmail(emailAddress);
+        if (!user) {
+          console.warn(`⚠️  User not found for email: ${emailAddress}`);
+          return;
+        }
+        await handleGmailNotification(user, historyId);
+      } catch (err) {
+        console.error('❌ Async processing failed:', err);
+      }
     });
 
   } catch (error) {
     console.error('❌ Error processing Gmail webhook:', error);
-    res.status(500).json({ error: 'Internal server error' });
+    // Always ACK to avoid redelivery loops
+    try { res.status(200).end(); } catch (_) {}
   }
 });
 
-/**
- * Process Gmail history changes
- */
-async function processGmailChanges(userId, historyId) {
-  try {
-    const userWatch = gmailPubSub.getWatchInfo(userId);
-    if (!userWatch) {
-      throw new Error(`No watch info found for user ${userId}`);
+// Cache key helpers for storing last processed historyId per user
+function lastHistoryCacheKey(userId) {
+  return `gmail:lastHistoryId:${userId}`;
+}
+
+// Main handler for Gmail notifications
+async function handleGmailNotification(user, notificationHistoryId) {
+  const userId = String(user.id);
+  console.log(`🔔 Handling Gmail notification for user ${userId} (${user.email})`);
+
+  const oauth2Client = new google.auth.OAuth2(
+    process.env.GOOGLE_CLIENT_ID,
+    process.env.GOOGLE_CLIENT_SECRET,
+    process.env.GOOGLE_CALLBACK_URL
+  );
+  oauth2Client.setCredentials({ refresh_token: user.refreshToken });
+  const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
+
+  // Bootstrap if we don't have a starting historyId
+  let startHistoryId = await cache.get(lastHistoryCacheKey(userId));
+  if (!startHistoryId) {
+    try {
+      const profile = await gmail.users.getProfile({ userId: 'me' });
+      startHistoryId = profile.data.historyId;
+      await cache.set(lastHistoryCacheKey(userId), String(startHistoryId));
+      console.log(`📝 Bootstrapped historyId for user ${userId}: ${startHistoryId}`);
+      return; // Nothing to process on first notification
+    } catch (e) {
+      console.error('❌ Failed to bootstrap historyId:', e?.message || e);
+      return;
     }
+  }
 
-    // Process history changes since last known historyId
-    const changes = await gmailPubSub.processGmailHistoryChanges(userId, userWatch.historyId);
+  // Walk history pages since last processed ID
+  let pageToken = undefined;
+  const newMessageIds = new Set();
+  const labelChanges = [];
+  let newLatestHistoryId = null;
 
-    // Get updated inbox counts
-    const inboxCounts = await gmailPubSub.getInboxCounts(userId);
-
-    console.log(`📊 Processed changes for user ${userId}:`, {
-      emailChanges: changes.emailChanges.length,
-      labelChanges: changes.labelChanges.length,
-      newCounts: inboxCounts
+  do {
+    const resp = await gmail.users.history.list({
+      userId: 'me',
+      startHistoryId: String(startHistoryId),
+      historyTypes: ['messageAdded', 'messageDeleted', 'labelAdded', 'labelRemoved'],
+      pageToken,
+      labelId: 'INBOX',
     });
+    newLatestHistoryId = resp.data.historyId || newLatestHistoryId;
+    const history = resp.data.history || [];
+    for (const h of history) {
+      if (Array.isArray(h.messagesAdded)) {
+        for (const m of h.messagesAdded) {
+          if (m?.message?.id) newMessageIds.add(m.message.id);
+        }
+      }
+      if (Array.isArray(h.labelsAdded)) {
+        for (const la of h.labelsAdded) {
+          if (la?.message?.id) {
+            labelChanges.push({ id: la.message.id, add: la.labelIds || [] });
+          }
+        }
+      }
+      if (Array.isArray(h.labelsRemoved)) {
+        for (const lr of h.labelsRemoved) {
+          if (lr?.message?.id) {
+            labelChanges.push({ id: lr.message.id, remove: lr.labelIds || [] });
+          }
+        }
+      }
+    }
+    pageToken = resp.data.nextPageToken;
+  } while (pageToken);
 
-    return {
-      userId,
-      emailChanges: changes.emailChanges,
-      labelChanges: changes.labelChanges,
-      inboxCounts,
-      totalChanges: changes.emailChanges.length + changes.labelChanges.length,
-      timestamp: new Date().toISOString()
-    };
+  // Upsert new/changed messages: fetch minimal metadata for UI
+  const upserts = Array.from(newMessageIds);
+  for (const msgId of upserts) {
+    try {
+      const m = await gmail.users.messages.get({
+        userId: 'me',
+        id: msgId,
+        format: 'metadata',
+        metadataHeaders: ['Subject', 'From', 'To', 'Date']
+      });
+      const message = serializeForUI(m.data);
 
-  } catch (error) {
-    console.error(`❌ Failed to process Gmail changes for user ${userId}:`, error);
-    throw error;
+      // Invalidate inbox cache so refresh shows consistent state
+      try {
+        const emailCache = require('../../lib/emailCache');
+        await emailCache.invalidateUserInbox(userId, 'gmail');
+      } catch (_) {}
+
+      // Emit via Socket.IO using standardized event names
+      try { socketIOService.newEmail(userId, message); } catch (_) {}
+
+      // Also emit via SSE for any listeners
+      try { broadcastToUser(userId, { type: 'email_updated', changeType: 'added', messageId: message.id, threadId: message.threadId, emailDetail: message, timestamp: new Date().toISOString() }); } catch (_) {}
+
+    } catch (e) {
+      console.error('❌ Failed to upsert message', msgId, e?.message || e);
+    }
+  }
+
+  // Emit label changes as immediate read/unread updates
+  for (const ch of labelChanges) {
+    const add = ch.add || [];
+    const remove = ch.remove || [];
+    const isUnreadAdded = add.includes('UNREAD');
+    const isUnreadRemoved = remove.includes('UNREAD');
+    let isRead = undefined;
+    if (isUnreadAdded) isRead = false;
+    if (isUnreadRemoved) isRead = true;
+
+    if (typeof isRead === 'boolean') {
+      // Socket event for row styling update
+      try { socketIOService.emailUpdated(userId, { id: ch.id, isRead, source: 'pubsub_immediate' }); } catch (_) {}
+      // SSE immediate event for UI bridge
+      try { broadcastToUser(userId, { type: 'email_status_updated_immediate', messageId: ch.id, isRead, changeType: isRead ? 'marked_read' : 'marked_unread', priority: 'immediate', timestamp: new Date().toISOString() }); } catch (_) {}
+    }
+  }
+
+  // Optionally emit updated counters
+  try {
+    const counts = await getInboxCounts(gmail);
+    try { socketIOService.countUpdated(userId, counts, 'pubsub_notification'); } catch (_) {}
+    try { broadcastToUser(userId, { type: 'unread_count_updated', unread: counts.unread, total: counts.total, source: 'pubsub_notification', timestamp: new Date().toISOString() }); } catch (_) {}
+  } catch (e) {
+    console.warn('⚠️ Failed to compute inbox counts:', e?.message || e);
+  }
+
+  // Advance last processed historyId (monotonic)
+  if (newLatestHistoryId) {
+    await cache.set(lastHistoryCacheKey(userId), String(newLatestHistoryId));
+    console.log(`✅ Advanced historyId for user ${userId} -> ${newLatestHistoryId}`);
   }
 }
 
@@ -119,13 +222,11 @@ async function sendRealTimeUpdates(userId, updateData) {
         timestamp: updateData.timestamp
       };
 
-      // Send via Socket.IO (if available)
-      if (socketIOService && socketIOService.io) {
-        socketIOService.io.to(userId).emit('gmailUpdate', countUpdate);
-      }
+      // Send via Socket.IO helper (broadcast to user's sockets)
+      try { socketIOService.countUpdated(userId, { unread: countUpdate.unread, total: countUpdate.total }, countUpdate.source); } catch (_) {}
 
-      // Send via SSE (your existing SSE implementation)
-      sendSSEUpdate(userId, countUpdate);
+      // Send via SSE (existing SSE implementation)
+      try { broadcastToUser(userId, countUpdate); } catch (_) {}
     }
 
     // Send IMMEDIATE detailed email status updates (for instant UI changes)
@@ -144,21 +245,10 @@ async function sendRealTimeUpdates(userId, updateData) {
 
         console.log(`⚡ Sending IMMEDIATE email status update:`, immediateUpdate);
 
-        // Send via Socket.IO (PRIORITY: Immediate email status update)
-        if (socketIOService && socketIOService.io) {
-          socketIOService.io.to(userId).emit('gmailUpdate', immediateUpdate);
-
-          // ALSO send via existing Socket.IO email update system for React hooks
-          socketIOService.io.to(userId).emit('emailUpdated', {
-            emailId: emailUpdate.messageId,
-            isRead: emailUpdate.isRead,
-            source: 'pubsub_immediate',
-            timestamp: emailUpdate.timestamp
-          });
-        }
-
-        // Send via SSE
-        sendSSEUpdate(userId, immediateUpdate);
+        // Socket.IO standardized event name (email_updated)
+        try { socketIOService.emailUpdated(userId, { id: emailUpdate.messageId, isRead: emailUpdate.isRead, source: 'pubsub_immediate' }); } catch (_) {}
+        // SSE
+        try { broadcastToUser(userId, immediateUpdate); } catch (_) {}
       }
     }
 
@@ -173,13 +263,9 @@ async function sendRealTimeUpdates(userId, updateData) {
         timestamp: updateData.timestamp
       };
 
-      // Send via Socket.IO
-      if (socketIOService && socketIOService.io) {
-        socketIOService.io.to(userId).emit('gmailUpdate', emailUpdate);
-      }
-
-      // Send via SSE
-      sendSSEUpdate(userId, emailUpdate);
+      // Send via Socket.IO and SSE
+      try { socketIOService.newEmail(userId, emailUpdate.emailDetail); } catch (_) {}
+      try { broadcastToUser(userId, emailUpdate); } catch (_) {}
     }
 
     // Send label changes (read/unread status) - ENHANCED
@@ -205,13 +291,9 @@ async function sendRealTimeUpdates(userId, updateData) {
 
       console.log(`📧 Sending label change update:`, statusUpdate);
 
-      // Send via Socket.IO
-      if (socketIOService && socketIOService.io) {
-        socketIOService.io.to(userId).emit('gmailUpdate', statusUpdate);
-      }
-
-      // Send via SSE
-      sendSSEUpdate(userId, statusUpdate);
+      // Socket immediate row update + SSE bridge
+      try { socketIOService.emailUpdated(userId, { id: statusUpdate.messageId, isRead: statusUpdate.isRead, source: 'pubsub_label_change' }); } catch (_) {}
+      try { broadcastToUser(userId, statusUpdate); } catch (_) {}
     }
 
     console.log(`✅ Real-time updates sent for user ${userId}`);
@@ -226,14 +308,7 @@ async function sendRealTimeUpdates(userId, updateData) {
  */
 function sendSSEUpdate(userId, data) {
   try {
-    // This should integrate with your existing SSE implementation
-    // You may need to modify this based on how you're managing SSE connections
-
-    // Example: if you have a global SSE manager
-    if (global.sseManager) {
-      global.sseManager.sendToUser(userId, data);
-    }
-
+    broadcastToUser(userId, data);
     console.log(`📡 SSE update sent to user ${userId}:`, data.type);
   } catch (error) {
     console.error(`❌ Failed to send SSE update:`, error);
@@ -246,23 +321,53 @@ function sendSSEUpdate(userId, data) {
  */
 async function findUserByEmail(emailAddress) {
   try {
-    // TODO: Implement based on your user storage
-    // This could be database query, Redis lookup, etc.
-
-    // Example with database:
-    // const user = await db.query('SELECT id FROM users WHERE email = ?', [emailAddress]);
-    // return user?.id;
-
-    // For now, return a placeholder
     console.log(`🔍 Looking up user for email: ${emailAddress}`);
-
-    // You'll need to replace this with actual user lookup logic
-    return emailAddress; // Using email as userId for now
-
+    const { rows } = await query(
+      'SELECT u.id, u.email, a.refresh_token_encrypted FROM users u JOIN accounts a ON a.user_id=u.id AND a.provider=$2 WHERE a.email=$1 LIMIT 1',
+      [emailAddress, 'google']
+    );
+    const row = rows[0];
+    if (!row) return null;
+    const refreshToken = row.refresh_token_encrypted ? decrypt(row.refresh_token_encrypted) : null;
+    if (!refreshToken) {
+      console.warn(`⚠️  No refresh token for user with email ${emailAddress}`);
+      return null;
+    }
+    return { id: row.id, email: row.email || emailAddress, refreshToken };
   } catch (error) {
     console.error('❌ Failed to find user by email:', error);
     return null;
   }
+}
+
+// Minimal serializer for UI consumption (aligns with frontend formatter)
+function serializeForUI(message) {
+  const headers = message?.payload?.headers || [];
+  const getHeader = (name) => headers.find(h => h.name === name)?.value || '';
+  return {
+    id: message.id,
+    threadId: message.threadId,
+    subject: getHeader('Subject') || '(No Subject)',
+    from: getHeader('From') || '',
+    to: getHeader('To') || '',
+    date: getHeader('Date') || new Date().toISOString(),
+    snippet: message.snippet || '',
+    labelIds: message.labelIds || [],
+    // Derived UI flags
+    isRead: !(message.labelIds || []).includes('UNREAD'),
+    isStarred: (message.labelIds || []).includes('STARRED'),
+    preview: message.snippet || ''
+  };
+}
+
+async function getInboxCounts(gmail) {
+  // Primary inbox counts
+  const unreadResp = await gmail.users.messages.list({ userId: 'me', labelIds: ['INBOX', 'UNREAD'] });
+  const totalResp = await gmail.users.messages.list({ userId: 'me', labelIds: ['INBOX'] });
+  return {
+    unread: unreadResp.data?.resultSizeEstimate || 0,
+    total: totalResp.data?.resultSizeEstimate || 0,
+  };
 }
 
 module.exports = router;
