@@ -46,12 +46,15 @@ function applyReadFlagAndLabels(email, isRead) {
 
 // Debug helper to log email list state changes
 function logEmailListState(emails, action, emailId = null) {
+  const unreadInList = emails.filter(e => !e.isRead).length;
+  const readInList = emails.filter(e => e.isRead).length;
+
   console.log('\n' + '='.repeat(80));
   console.log(`📧 EMAIL LIST STATE DEBUG - ${action.toUpperCase()}`);
   console.log('='.repeat(80));
   console.log(`📊 Total emails: ${emails.length}`);
-  console.log(`📊 Unread emails: ${emails.filter(e => !e.isRead).length}`);
-  console.log(`📊 Read emails: ${emails.filter(e => e.isRead).length}`);
+  console.log(`📊 Unread emails in list: ${unreadInList}`);
+  console.log(`📊 Read emails: ${readInList}`);
 
   if (emailId) {
     const targetEmail = emails.find(e => e.id === emailId || e.threadId === emailId || e.messageId === emailId);
@@ -99,8 +102,28 @@ export function useEmail() {
   useEffect(() => {
     if (emails.length > 0) {
       logEmailListState(emails, 'EMAILS_STATE_CHANGED');
+
+      // Validate unread count accuracy
+      const unreadInList = emails.filter(e => !e.isRead).length;
+      if (unreadInList !== unreadCount) {
+        console.warn(`🚨 COUNT MISMATCH DETECTED!`);
+        console.warn(`   📧 Emails in list marked as unread: ${unreadInList}`);
+        console.warn(`   📊 UnreadCount state: ${unreadCount}`);
+        console.warn(`   🔍 Difference: ${unreadCount - unreadInList}`);
+
+        // Log the unread emails for debugging
+        const unreadEmails = emails.filter(e => !e.isRead);
+        console.warn(`   📋 Unread emails in list:`, unreadEmails.map(e => ({
+          id: e.id,
+          threadId: e.threadId,
+          subject: e.subject?.substring(0, 40) + '...',
+          isRead: e.isRead
+        })));
+      } else {
+        console.log(`✅ Count validation PASSED: ${unreadInList} unread emails`);
+      }
     }
-  }, [emails])
+  }, [emails, unreadCount])
 
   // Load emails for a specific folder
   const loadEmails = useCallback(withErrorHandling(async (folder = 'inbox', pageOrCursor = 1, search = '', _replace = true) => {
@@ -318,11 +341,15 @@ export function useEmail() {
 
     // Adjust unread counters locally first (inbox only)
     console.log('📧 Applying unread delta:', unreadDelta, 'to current count:', unreadCount)
-    setUnreadCount((prev) => {
-      const newCount = Math.max(0, prev + unreadDelta)
-      console.log('📧 Updated unread count from', prev, 'to', newCount)
-      return newCount
-    })
+    let optimisticUpdateApplied = false
+    if (unreadDelta !== 0) {
+      setUnreadCount((prev) => {
+        const newCount = Math.max(0, prev + unreadDelta)
+        console.log('📧 Updated unread count from', prev, 'to', newCount)
+        optimisticUpdateApplied = true
+        return newCount
+      })
+    }
 
     // Clear selection after bulk actions
     if (ids.length > 1 || selectedEmails.has(ids[0])) {
@@ -336,15 +363,32 @@ export function useEmail() {
     // Send action via Socket.IO for bidirectional communication
     socketService.sendEmailAction(action, ids, 'gmail');
 
+    // Convert message IDs to thread IDs for backend Gmail API calls
+    const threadIds = ids.map(id => {
+      const email = emails.find(e => e.id === id || e.threadId === id || e.messageId === id)
+      if (email && email.threadId) {
+        console.log(`📧 Converting message ID ${id} to thread ID ${email.threadId}`)
+        return email.threadId
+      }
+      console.log(`📧 Using original ID ${id} (thread ID or not found)`)
+      return id
+    })
+
+    console.log(`📧 Sending to backend - Original IDs:`, ids)
+    console.log(`📧 Sending to backend - Thread IDs:`, threadIds)
+
     // Then try to sync with backend (don't wait for it)
     try {
       switch (action) {
         case 'read':
-          markEmailAsRead(ids).then(result => {
-            if (result.immediateUpdate && result.newCounts) {
+          markEmailAsRead(threadIds, ids).then(result => {
+            if (result.immediateUpdate && result.newCounts && !optimisticUpdateApplied) {
+              // Only apply backend count if we didn't already do optimistic update
               setUnreadCount(result.newCounts.unread)
               setTotal(result.newCounts.total)
               console.log('📊 Immediate count update (read):', result.newCounts)
+            } else if (optimisticUpdateApplied) {
+              console.log('📊 Skipping backend count update - optimistic update already applied')
             }
             clearEmailCache()
           }).catch(error => {
@@ -352,11 +396,14 @@ export function useEmail() {
           })
           break
         case 'unread':
-          markEmailAsUnread(ids).then(result => {
-            if (result.immediateUpdate && result.newCounts) {
+          markEmailAsUnread(threadIds).then(result => {
+            if (result.immediateUpdate && result.newCounts && !optimisticUpdateApplied) {
+              // Only apply backend count if we didn't already do optimistic update
               setUnreadCount(result.newCounts.unread)
               setTotal(result.newCounts.total)
               console.log('📊 Immediate count update (unread):', result.newCounts)
+            } else if (optimisticUpdateApplied) {
+              console.log('📊 Skipping backend count update - optimistic update already applied')
             }
             clearEmailCache()
           }).catch(error => {
@@ -513,7 +560,11 @@ export function useEmail() {
     })
 
     const unsubscribeCountUpdate = socketService.addEventListener('unreadCountUpdate', (data) => {
-      if (typeof data.unread === 'number') setUnreadCount(data.unread)
+      console.log('📊 Socket.IO unread count update received:', data)
+      if (typeof data.unread === 'number') {
+        console.log('📊 Updating unread count via Socket.IO from', unreadCount, 'to', data.unread)
+        setUnreadCount(data.unread)
+      }
       if (typeof data.total === 'number') setTotal(data.total)
     })
 
@@ -528,13 +579,31 @@ export function useEmail() {
 
     const unsubscribeEmailDeleted = socketService.addEventListener('emailDeleted', (data) => {
       if (data.emailId) {
-        setEmails(prev => prev.filter(email => !(
+        console.log('📧 Email deletion event received:', data);
+        const emailToRemove = emails.find(email =>
           email.id === data.emailId ||
           email.threadId === data.emailId ||
           email.messageId === data.emailId ||
           email.conversationId === data.emailId
-        )))
-        setTotal(prev => Math.max(0, prev - 1))
+        );
+
+        if (emailToRemove) {
+          console.log(`🗑️ Removing ${data.reason === 'thread_not_found' ? 'stale' : 'deleted'} email from list:`, emailToRemove.id);
+          setEmails(prev => prev.filter(email => !(
+            email.id === data.emailId ||
+            email.threadId === data.emailId ||
+            email.messageId === data.emailId ||
+            email.conversationId === data.emailId
+          )));
+          setTotal(prev => Math.max(0, prev - 1));
+          // If the removed email was unread, decrease unread count
+          if (emailToRemove && !emailToRemove.isRead) {
+            console.log('📊 Decreasing unread count due to stale email removal');
+            setUnreadCount(prev => Math.max(0, prev - 1));
+          }
+        } else {
+          console.log('📧 Email to delete not found in current list:', data.emailId);
+        }
       }
     })
 
@@ -609,11 +678,40 @@ export function useEmail() {
     },
     // 2) New emails
     (data) => {
+      console.log('🌉 Real-Time Bridge NEW EMAIL received:', data);
+
       if (data.email) {
         const formattedEmail = formatEmailForDisplay(data.email)
-        setEmails(prev => [formattedEmail, ...prev])
-        setTotal(prev => prev + 1)
-        if (!formattedEmail.isRead) setUnreadCount(prev => prev + 1)
+        console.log('📧 NEW EMAIL: Adding to top of list:', {
+          id: formattedEmail.id,
+          subject: formattedEmail.subject?.substring(0, 50) + '...',
+          from: formattedEmail.from,
+          isRead: formattedEmail.isRead
+        });
+
+        setEmails(prev => {
+          console.log('📧 BEFORE adding new email - total emails:', prev.length);
+          const updated = [formattedEmail, ...prev];
+          console.log('📧 AFTER adding new email - total emails:', updated.length);
+          logEmailListState(updated, 'NEW_EMAIL_ADDED', formattedEmail.id);
+          return updated;
+        });
+
+        setTotal(prev => {
+          const newTotal = prev + 1;
+          console.log('📊 Total count updated:', prev, '→', newTotal);
+          return newTotal;
+        });
+
+        if (!formattedEmail.isRead) {
+          setUnreadCount(prev => {
+            const newCount = prev + 1;
+            console.log('📊 Unread count updated:', prev, '→', newCount);
+            return newCount;
+          });
+        }
+      } else {
+        console.warn('⚠️ New email received but no email data:', data);
       }
     },
     // 3) Deletions

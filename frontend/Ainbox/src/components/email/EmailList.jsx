@@ -219,7 +219,7 @@ export default function EmailList({
 <VirtualList
   height={typeof window !== 'undefined' ? Math.max(240, window.innerHeight - 240) : 600}
   itemCount={filteredEmails.length}
-  itemSize={92}
+  itemSize={72}
   width={'100%'}
   overscanCount={6}
   itemKey={(index) => {
@@ -267,7 +267,7 @@ export default function EmailList({
                   }
                 }}
                 className={cn(
-                  "email-item flex items-center gap-4 p-4 hover:bg-gray-50 cursor-pointer transition-colors border-b border-gray-100",
+                  "email-item flex items-center gap-4 p-3 hover:bg-gray-50 cursor-pointer transition-colors border-b border-gray-100",
                   // Apply read/unread background first, then selection highlight so selection wins
                   email.isRead ? "read" : "unread",
                   selectedEmailId === email.id && "bg-blue-50 border-r-2 border-blue-500"
@@ -303,7 +303,7 @@ export default function EmailList({
                 </button>
 
                 {/* Avatar */}
-                <Avatar className="w-10 h-10 flex-shrink-0">
+                <Avatar className="w-8 h-8 flex-shrink-0">
                   {hasValidAvatar(email.avatar) && <AvatarImage src={email.avatar} />}
                   <AvatarFallback className={cn(
                     (() => {
@@ -323,6 +323,7 @@ export default function EmailList({
 
                 {/* Email content */}
                 <div className="flex-1 min-w-0">
+                  {/* Sender name on top */}
                   <div className="flex items-center gap-2 mb-1">
                     <span className={cn(
                       "font-medium text-gray-900 truncate",
@@ -330,15 +331,16 @@ export default function EmailList({
                     )}>
                       {getInboxDisplayName(email, currentUserEmail)}
                     </span>
-                    {email.labels.map((label, idx) => (
+                    {/* {email.labels.map((label, idx) => (
                       <Badge key={`${email.id}-${label}-${idx}`} variant={getLabelVariant(label)} className="text-xs">
                         {label}
                       </Badge>
-                    ))}
+                    ))} */}
                     {email.hasAttachment && (
                       <Paperclip className="w-3 h-3 text-gray-400" />
                     )}
                   </div>
+                  {/* Subject below sender */}
                   <h3 className={cn(
                     "text-sm text-gray-900 truncate mb-1",
                     !email.isRead && "font-semibold"

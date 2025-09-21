@@ -73,6 +73,31 @@ If you don't see the expected logs:
 3. Compare the debug logs to see where the flow breaks
 4. Check if email IDs match between backend and frontend
 5. Verify if the email list state actually changes
+
+🆕 NEW EMAIL ARRIVAL TESTING:
+
+1. ✅ Open your frontend app (http://localhost:5177)
+2. ✅ Open Developer Tools → Console
+3. ✅ Look for these NEW EMAIL debug logs:
+
+🎯 FRONTEND NEW EMAIL DEBUG:
+   🌉 Real-Time Bridge NEW EMAIL received: {...}
+   📧 NEW EMAIL: Adding to top of list: {id, subject, from, isRead}
+   📧 BEFORE adding new email - total emails: X
+   📧 AFTER adding new email - total emails: Y
+   📧 EMAIL LIST STATE DEBUG - NEW_EMAIL_ADDED
+
+🎯 TEST NEW EMAIL ARRIVAL:
+   1. Send a test email to your Gmail account from another email
+   2. Or use Gmail's web interface to send yourself an email
+   3. Watch the browser console for the new email debug logs
+   4. The new email should appear immediately at the top of the list
+
+🔍 WHAT TO LOOK FOR:
+   - New email should appear at the top of the email list instantly
+   - Console should show "NEW EMAIL: Adding to top of list"
+   - Total email count should increase by 1
+   - Email should have correct formatting and details
 `);
 
 console.log('\n✨ Happy debugging! The terminal-style debug logs will show exactly what\'s happening with your email records.\n');

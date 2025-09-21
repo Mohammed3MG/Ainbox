@@ -225,28 +225,59 @@ router.get('/emails', requireAuth, async (req, res) => {
 router.post('/gmail/mark-read', requireAuth, async (req, res) => {
   try {
     const ids = Array.isArray(req.body?.ids) ? req.body.ids : [];
+    const originalIds = Array.isArray(req.body?.originalIds) ? req.body.originalIds : ids;
+    console.log(`📧 Gmail mark-read request received for ${ids.length} email(s):`, ids);
+    console.log(`📧 Original message IDs for Socket.IO:`, originalIds);
     if (!ids.length) return res.status(400).json({ error: 'ids required' });
     const oauth2Client = await getGoogleOAuthClientFromCookies(req);
     const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
     let ok = 0;
-    for (const id of ids) {
+    for (let i = 0; i < ids.length; i++) {
+      const threadId = ids[i];
+      const originalId = originalIds[i] || threadId;
+
       try {
         const uid = String(req.auth?.sub);
-        await readState.setOverride(uid, 'gmail', id, 'read');
-        await readState.removeUnread(uid, 'gmail', id);
+        await readState.setOverride(uid, 'gmail', threadId, 'read');
+        await readState.removeUnread(uid, 'gmail', threadId);
         // Notify UI instantly for the row; counts broadcast later using Primary-only stats
         try {
-          socketIOService.emailUpdated(uid, { id, isRead: true, source: 'user_action' });
+          // Use original message ID for Socket.IO so frontend can match properly
+          socketIOService.emailUpdated(uid, { id: originalId, isRead: true, source: 'user_action' });
+          console.log(`📧 Socket.IO event sent for message ID ${originalId} (thread ${threadId})`);
         } catch (_) {}
         ok += 1;
         // background sync to provider
         setImmediate(async () => {
           try {
-            await gmail.users.threads.modify({ userId: 'me', id, requestBody: { removeLabelIds: ['UNREAD'] } });
-            await readState.clearOverrideOnSuccess(uid, 'gmail', id, true);
+            console.log(`🔄 Syncing read state to Gmail for thread ${threadId}`);
+            await gmail.users.threads.modify({ userId: 'me', id: threadId, requestBody: { removeLabelIds: ['UNREAD'] } });
+            console.log(`✅ Successfully synced read state to Gmail for thread ${threadId}`);
+            await readState.clearOverrideOnSuccess(uid, 'gmail', threadId, true);
           } catch (err) {
-            console.log(`❌ Failed to sync read state for ${id}, keeping override:`, err.message);
-            await readState.clearOverrideOnSuccess(uid, 'gmail', id, false);
+            if (err.status === 404 || err.code === 404) {
+              console.warn(`⚠️ Thread ${threadId} not found in Gmail (404) - thread may have been deleted. Clearing override.`);
+              // Thread doesn't exist anymore, clear the override and treat as success
+              await readState.clearOverrideOnSuccess(uid, 'gmail', threadId, true);
+              // Invalidate any cached data for this thread
+              try {
+                await emailCache.invalidateThread(uid, 'gmail', threadId);
+              } catch (_) {}
+              // Notify frontend to remove this stale email from the list
+              try {
+                console.log(`📧 Notifying frontend to remove stale email: ${originalId} (thread ${threadId})`);
+                socketIOService.emailDeleted(uid, { id: originalId, threadId: threadId, reason: 'thread_not_found', source: 'stale_data' });
+              } catch (_) {}
+            } else {
+              console.error(`❌ Failed to sync read state for ${threadId}:`, {
+                error: err.message,
+                code: err.code,
+                status: err.status,
+                threadId: threadId,
+                userId: uid
+              });
+              await readState.clearOverrideOnSuccess(uid, 'gmail', threadId, false);
+            }
           }
         });
       } catch (_) {}
@@ -325,6 +356,7 @@ router.get('/gmail/spam-stats', requireAuth, async (req, res) => {
 router.post('/gmail/mark-unread', requireAuth, async (req, res) => {
   try {
     const ids = Array.isArray(req.body?.ids) ? req.body.ids : [];
+    console.log(`📧 Gmail mark-unread request received for ${ids.length} email(s):`, ids);
     if (!ids.length) return res.status(400).json({ error: 'ids required' });
     const oauth2Client = await getGoogleOAuthClientFromCookies(req);
     const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
@@ -340,11 +372,29 @@ router.post('/gmail/mark-unread', requireAuth, async (req, res) => {
         ok += 1;
         setImmediate(async () => {
           try {
+            console.log(`🔄 Syncing unread state to Gmail for thread ${id}`);
             await gmail.users.threads.modify({ userId: 'me', id, requestBody: { addLabelIds: ['UNREAD'] } });
+            console.log(`✅ Successfully synced unread state to Gmail for thread ${id}`);
             await readState.clearOverrideOnSuccess(uid, 'gmail', id, true);
           } catch (err) {
-            console.log(`❌ Failed to sync unread state for ${id}, keeping override:`, err.message);
-            await readState.clearOverrideOnSuccess(uid, 'gmail', id, false);
+            if (err.status === 404 || err.code === 404) {
+              console.warn(`⚠️ Thread ${id} not found in Gmail (404) - thread may have been deleted. Clearing override.`);
+              // Thread doesn't exist anymore, clear the override and treat as success
+              await readState.clearOverrideOnSuccess(uid, 'gmail', id, true);
+              // Invalidate any cached data for this thread
+              try {
+                await emailCache.invalidateThread(uid, 'gmail', id);
+              } catch (_) {}
+            } else {
+              console.error(`❌ Failed to sync unread state for ${id}:`, {
+                error: err.message,
+                code: err.code,
+                status: err.status,
+                threadId: id,
+                userId: uid
+              });
+              await readState.clearOverrideOnSuccess(uid, 'gmail', id, false);
+            }
           }
         });
       } catch (_) {}
@@ -814,6 +864,121 @@ router.post('/test/simulate-new-email', requireAuth, async (req, res) => {
   } catch (err) {
     console.error('Error simulating new email:', err);
     res.status(500).json({ error: 'Failed to simulate new email' });
+  }
+});
+
+// Import link sanitizer
+const { sanitizeLinks } = require('../lib/linkSanitizer');
+
+// Simple email content endpoint for EmailContent component
+router.get('/emails/:emailId/content', requireAuth, async (req, res) => {
+  try {
+    const { emailId } = req.params;
+    console.log(`📧 EMAIL CONTENT REQUEST RECEIVED for: ${emailId}`);
+    console.log(`📧 Request URL: ${req.originalUrl}`);
+    console.log(`📧 Request headers:`, req.headers);
+
+    // Get Gmail OAuth client
+    const oauth2Client = await getGoogleOAuthClientFromCookies(req);
+    const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
+
+    // Fetch the email message
+    const response = await gmail.users.messages.get({
+      userId: 'me',
+      id: emailId
+    });
+
+    const message = response.data;
+    if (!message) {
+      return res.status(404).json({ error: 'Email not found' });
+    }
+
+    // Extract email content using existing helper
+    const extracted = await extractMessage(gmail, message, { includeAttachments: true });
+
+    const headers = message.payload.headers || [];
+    const getHeader = (name) => headers.find(h => h.name.toLowerCase() === name.toLowerCase())?.value;
+
+    // Create a simple HTML srcDoc from the content
+    let htmlContent = extracted.html || extracted.text || 'No content available';
+
+    // If it's plain text, convert to HTML
+    if (!extracted.html && extracted.text) {
+      htmlContent = '<pre style="font-family: Arial, sans-serif; white-space: pre-wrap; word-wrap: break-word;">' + extracted.text + '</pre>';
+    }
+
+    // Sanitize all links for security
+    console.log('🔒 Sanitizing links in email content...');
+    htmlContent = sanitizeLinks(htmlContent);
+
+    // Basic HTML document for iframe
+    const srcDoc = '<!DOCTYPE html>' +
+      '<html>' +
+      '<head>' +
+      '<meta charset="utf-8">' +
+      '<meta name="viewport" content="width=device-width, initial-scale=1">' +
+      '<style>' +
+      'body { font-family: Arial, sans-serif; margin: 20px; line-height: 1.6; }' +
+      'img { max-width: 100%; height: auto; }' +
+      'a { color: #0066cc; text-decoration: underline; }' +
+      'a:hover { color: #004499; }' +
+      '.link-warning-low { border-bottom: 2px dotted #ffc107; }' +
+      '.link-warning-medium { border-bottom: 2px dotted #fd7e14; background-color: #fff3cd; }' +
+      '.link-warning-high { border-bottom: 2px dotted #dc3545; background-color: #f8d7da; color: #721c24; }' +
+      '.link-warning-low:hover, .link-warning-medium:hover, .link-warning-high:hover { opacity: 0.8; }' +
+      '</style>' +
+      '<script>' +
+      'document.addEventListener("DOMContentLoaded", function() {' +
+      '  document.addEventListener("click", function(e) {' +
+      '    if (e.target.tagName === "A" || e.target.closest("a")) {' +
+      '      e.preventDefault();' +
+      '      const link = e.target.tagName === "A" ? e.target : e.target.closest("a");' +
+      '      if (link && link.href) {' +
+      '        window.parent.open(link.href, "_blank", "noopener,noreferrer");' +
+      '      }' +
+      '    }' +
+      '  });' +
+      '});' +
+      '</script>' +
+      '</head>' +
+      '<body>' +
+      htmlContent +
+      '</body>' +
+      '</html>';
+
+    // Return data in format expected by EmailContent component
+    const jsonResponse = {
+      id: emailId,
+      subject: getHeader('Subject') || 'No Subject',
+      from: {
+        name: '',
+        email: getHeader('From') || ''
+      },
+      to: [],
+      cc: [],
+      bcc: [],
+      date: getHeader('Date') || new Date().toISOString(),
+      hasHtml: !!extracted.html,
+      srcDoc,
+      textFallback: extracted.text || 'No text content',
+      inlineCidCount: 0,
+      attachments: extracted.attachments || []
+    };
+
+    console.log(`📧 Sending JSON response for ${emailId}:`, {
+      subject: jsonResponse.subject,
+      hasHtml: jsonResponse.hasHtml,
+      responseSize: JSON.stringify(jsonResponse).length
+    });
+
+    res.json(jsonResponse);
+
+  } catch (error) {
+    console.error('❌ Failed to fetch email content:', error);
+    res.status(500).json({
+      error: 'Failed to fetch email content',
+      details: error.message
+    });
   }
 });
 

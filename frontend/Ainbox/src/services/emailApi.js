@@ -488,13 +488,19 @@ export async function getEmailById(emailId) {
 // Email actions - Note: Your backend focuses on reading emails
 // For actions like star/archive/delete, you would need to add Gmail API endpoints
 // For now, these are placeholder functions that could be implemented
-export async function markEmailAsRead(emailIds) {
+export async function markEmailAsRead(emailIds, originalIds = null) {
   const ids = Array.isArray(emailIds) ? emailIds : [emailIds]
+  const origIds = originalIds || ids
   const provider = await getCurrentProvider()
+
+  console.log(`📧 Frontend: Marking ${ids.length} email(s) as read:`, ids)
+  console.log(`📧 Frontend: Original message IDs:`, origIds)
 
   try {
     if (provider === 'gmail') {
-      const result = await apiFetch('/gmail/mark-read', { method: 'POST', body: { ids } })
+      console.log(`📧 Frontend: Sending mark-read request to backend for provider ${provider}`)
+      const result = await apiFetch('/gmail/mark-read', { method: 'POST', body: { ids, originalIds: origIds } })
+      console.log(`📧 Frontend: Mark-read response received:`, result)
       // Return immediate count updates if available
       if (result.newCounts) {
         return {

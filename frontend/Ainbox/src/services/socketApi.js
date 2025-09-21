@@ -124,6 +124,8 @@ class SocketIOService {
       console.log('🗑️ Socket.IO email deleted:', data);
       this.notifyListeners('emailDeleted', {
         emailId: data.emailId,
+        threadId: data.threadId,
+        reason: data.reason,
         timestamp: data.timestamp,
         source: data.source
       });

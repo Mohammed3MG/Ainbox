@@ -97,5 +97,91 @@ router.post('/ai/suggest-replies', requireAuth, async (req, res) => {
   }
 });
 
+// Generate email content using Ollama
+router.post('/ai/generate-email', async (req, res) => {
+  const { prompt } = req.body;
+
+  try {
+
+    if (!prompt) {
+      return res.status(400).json({ error: 'Prompt is required' });
+    }
+
+    // Create an optimized prompt for tinyllama
+    const fullPrompt = `You are an expert email writer. Write a SHORT, CLEAR, and PROFESSIONAL email.
+
+USER REQUEST: "${prompt}"
+
+RULES:
+1. Write ONLY the email body (no subject line)
+2. Keep it SHORT - maximum 3-4 sentences
+3. Use simple, clear language
+4. Be polite and professional
+5. Start with proper greeting (Dear [Name] or Hi [Name])
+6. End with appropriate closing (Best regards, Thank you, etc.)
+7. Stay focused on the main request
+8. Be ethical and respectful
+
+WRITE THE EMAIL NOW:`;
+
+    console.log('🤖 Generating email with AI using tinyllama');
+
+    // Use the proper Ollama chat helper
+    const messages = [
+      {
+        role: 'user',
+        content: fullPrompt
+      }
+    ];
+
+    const out = await chat(messages, {
+      model: 'gemma2:2b',
+      options: {
+        temperature: 0.3,  // Lower temperature for more focused responses
+        num_predict: 150,  // Shorter responses (150 tokens max)
+        top_p: 0.9,       // Focus on most likely words
+        stop: ['USER:', 'RULES:', 'Human:', 'Assistant:', '\n\n\n']  // Stop tokens
+      }
+    });
+
+    // Clean up the generated text for tinyllama
+    let cleanedText = out.content
+      .replace(/^(WRITE THE EMAIL NOW:|Email content:|Email:|Dear Sir\/Madam,?\s*)/i, '')
+      .replace(/^\s*[\*\-•]\s*/gm, '') // Remove bullet points
+      .replace(/^(Here is|Here's|Below is).*?:\s*/i, '') // Remove intro phrases
+      .replace(/\n\s*\n\s*\n/g, '\n\n') // Fix excessive line breaks
+      .replace(/^Dear\s*,\s*/i, 'Dear [Name],\n\n') // Fix empty greeting
+      .trim();
+
+    // Ensure proper greeting
+    if (!cleanedText.match(/^(Dear|Hi|Hello|Good morning|Good afternoon)/i)) {
+      cleanedText = 'Dear [Name],\n\n' + cleanedText;
+    }
+
+    // Ensure proper closing
+    if (!cleanedText.match(/(Best regards|Sincerely|Thank you|Best|Regards),?\s*$/i)) {
+      cleanedText = cleanedText + '\n\nBest regards,';
+    }
+
+    res.json({
+      email: cleanedText,
+      model: 'gemma2:2b',
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('AI email generation error:', error);
+
+    // NO FALLBACK - Only real AI responses allowed
+    console.log('❌ Ollama failed - returning error instead of fallback template');
+
+    return res.status(500).json({
+      error: 'AI generation failed',
+      details: error.message,
+      note: 'Ollama connection issue. Please check if Ollama is running and the model is available.'
+    });
+  }
+});
+
 module.exports = router;
 

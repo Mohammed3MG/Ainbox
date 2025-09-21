@@ -58,6 +58,14 @@ app.use((req, res, next) => {
   next();
 });
 
+// Global request logger to debug routing issues
+app.use((req, res, next) => {
+  if (req.path.includes('/emails/') && req.path.includes('/content')) {
+    console.log(`🌐 EMAIL CONTENT REQUEST: ${req.method} ${req.path} ${req.originalUrl}`);
+  }
+  next();
+});
+
 // Add rate limiting middleware for scaling (if available)
 if (rateLimiter) {
   app.use('/gmail/', rateLimiter.createMiddleware('gmail'));
@@ -88,6 +96,7 @@ app.use('/api/v1', apiV1);
 app.use(aiRoutes);
 app.use('/sync', syncRoutes);
 app.use('/webhooks', gmailWebhook);
+// app.use('/api', require('./routes/emailContent')); // Temporarily disabled for debugging
 // app.use('/api/emails', emailStatusRoutes);
 
 

@@ -62,21 +62,12 @@ export default function EmailSidebar({ activeFolder, onFolderChange, onCompose, 
               <Icon className="w-4 h-4" />
               <span className="flex-1 text-left">{item.label}</span>
               {dynamicCount > 0 && (
-                <Badge
-                  variant={isActive ? "secondary" : "default"}
-                  className={cn(
-                    "text-xs font-semibold min-w-[20px] h-5 flex items-center justify-center",
-                    item.id === 'inbox'
-                      ? isActive
-                        ? "bg-red-500 text-white"
-                        : "bg-red-500 text-white"
-                      : isActive
-                        ? "bg-blue-500 text-white"
-                        : "bg-blue-100 text-blue-600"
-                  )}
-                >
+                <span className={cn(
+                  "text-xs font-medium",
+                  isActive ? "text-white" : "text-gray-500"
+                )}>
                   {dynamicCount}
-                </Badge>
+                </span>
               )}
             </button>
           )

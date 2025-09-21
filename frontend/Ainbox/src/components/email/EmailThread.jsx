@@ -34,8 +34,10 @@ import {
 import { cn } from '../../lib/utils'
 import { generateAvatarProps, hasValidAvatar } from '../../utils/avatarUtils'
 import { processEmailContent, applyEmailStyles, sanitizeHtml, rewriteCidSrc, buildIframeDoc } from '../../utils/htmlUtils'
+import { getBestEmailContent, assessContentQuality } from '../../utils/emailContentFixer'
 import { summarizeThread, suggestReplies } from '../../services/aiApi'
 import AIContentBox from '../ui/AIContentBox'
+import EmailContent from './EmailContent'
 
 // Using real thread data from useEmailThread hook
 
@@ -70,11 +72,26 @@ const EmailHtmlFrame = ({ message }) => {
     const data = att?.data || att?.contentBytes || ''
     if (cid && data) cidMap[cid] = `data:${mime};base64,${data}`
   }
-  let content = message?.html || message?.text || message?.body || ''
+  // Use advanced content analysis and repair
+  const bestContent = getBestEmailContent(message);
+  let content = bestContent.content;
+  const contentQuality = assessContentQuality(content, bestContent.type);
 
-  // If we only have plain text, let's convert it to rich HTML with proper formatting
-  if (!message?.html && (message?.text || message?.body)) {
-    const textContent = message?.text || message?.body || ''
+  console.log('📧 Email content analysis result:', {
+    type: bestContent.type,
+    quality: contentQuality,
+    processed: bestContent.processed,
+    issue: bestContent.originalIssue,
+    confidenceScore: bestContent.analysis?.confidenceScore,
+    detectedIssues: bestContent.analysis?.detectedIssues
+  });
+
+  // Show content quality indicator if needed
+  const showQualityWarning = contentQuality === 'poor' || contentQuality === 'very_poor' || bestContent.originalIssue || (bestContent.analysis?.confidenceScore < 0.6);
+
+  // If we have text content or need to enhance plain text
+  if (bestContent.type === 'text' || bestContent.type === 'extracted_text') {
+    const textContent = content || message?.text || message?.body || ''
     // Convert plain text to HTML with enhanced formatting
     content = textContent
       .replace(/&/g, '&amp;')
@@ -120,6 +137,45 @@ const EmailHtmlFrame = ({ message }) => {
 
   return (
     <div style={{ position: 'relative' }}>
+      {/* Content quality warning */}
+      {showQualityWarning && (
+        <div style={{
+          padding: '8px 12px',
+          backgroundColor: bestContent.originalIssue ? '#f8d7da' : '#fff3cd',
+          border: `1px solid ${bestContent.originalIssue ? '#f5c6cb' : '#ffeaa7'}`,
+          borderRadius: '4px',
+          marginBottom: '8px',
+          fontSize: '13px',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between'
+        }}>
+          <span>
+            {bestContent.originalIssue === 'auto_linking' && '🔧 Email content was repaired due to auto-linking corruption'}
+            {bestContent.originalIssue === 'corrupted_html' && '⚠️ Email HTML was corrupted, showing extracted text'}
+            {bestContent.originalIssue === 'malformed_tags' && '⚠️ Email HTML structure was malformed, using text fallback'}
+            {contentQuality === 'poor' && '📝 Email content quality is limited'}
+            {contentQuality === 'very_poor' && '⚠️ Email content may be incomplete'}
+            {bestContent.analysis?.confidenceScore < 0.6 && !bestContent.originalIssue && '⚠️ Email content quality is uncertain'}
+          </span>
+          <div style={{ fontSize: '11px', color: '#666', marginTop: '4px' }}>
+            {bestContent.type === 'extracted_text' && 'Text extracted from HTML'}
+            {bestContent.type === 'html_repaired' && `Repaired HTML (confidence: ${Math.round((bestContent.analysis?.confidenceScore || 0) * 100)}%)`}
+            {bestContent.type === 'text' && bestContent.originalIssue && 'Using text version due to HTML issues'}
+            {bestContent.analysis?.detectedIssues && bestContent.analysis.detectedIssues.length > 0 && (
+              <details style={{ marginTop: '4px', fontSize: '10px' }}>
+                <summary style={{ cursor: 'pointer' }}>Technical details ({bestContent.analysis.detectedIssues.length} issues)</summary>
+                <ul style={{ margin: '4px 0', paddingLeft: '16px' }}>
+                  {bestContent.analysis.detectedIssues.map((issue, idx) => (
+                    <li key={idx}>{issue}</li>
+                  ))}
+                </ul>
+              </details>
+            )}
+          </div>
+        </div>
+      )}
+
       {hasExternalImages && !loadExternalContent && (
         <div style={{
           padding: '8px 12px',
@@ -422,7 +478,7 @@ export default function EmailThread({
       {/* Compact Thread header */}
       <div className="flex-shrink-0 border-b border-gray-100 bg-white">
         {/* Top row - Back button and actions */}
-        <div className="flex items-center justify-between px-4 py-2 border-b border-gray-50">
+        <div className="flex items-center  px-4 py-2 border-b border-gray-50">
           <Button
             variant="ghost"
             size="sm"
@@ -447,22 +503,101 @@ export default function EmailThread({
               <MoreHorizontal className="w-4 h-4 text-gray-500" />
             </Button>
           </div>
+
+
+            <div className="flex items-center gap-2 mt-3 text-xs text-gray-500 ml-auto">
+              {/* AI tools */}
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleSummarize}
+                disabled={summarizing}
+                className="text-xs px-1.5 py-0.5 h-6 border-amber-200 text-amber-700 hover:bg-amber-50"
+              >
+                {summarizing ? (
+                  <Sparkles className="w-3 h-3 animate-spin" />
+                ) : (
+                  <Sparkles className="w-3 h-3" />
+                )}
+              </Button>
+
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleSuggestReplies}
+                disabled={suggesting}
+                className="text-xs px-1.5 py-0.5 h-6 border-blue-200 text-blue-700 hover:bg-blue-50"
+              >
+                {suggesting ? (
+                  <Brain className="w-3 h-3 animate-pulse" />
+                ) : (
+                  <Wand2 className="w-3 h-3" />
+                )}
+              </Button>
+
+              {/* Divider */}
+              <div className="w-px h-4 bg-gray-300 mx-1"></div>
+
+              {/* Reply buttons */}
+              <Button
+                onClick={() => onReply(thread.messages[thread.messages.length - 1])}
+                size="sm"
+                className="bg-blue-600 hover:bg-blue-700 text-white text-xs px-2 py-0.5 h-6"
+              >
+                <Reply className="w-3 h-3 mr-1" />
+                Reply
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => onReplyAll(thread.messages[thread.messages.length - 1])}
+                className="text-xs px-2 py-0.5 h-6 border-gray-300 text-gray-700 hover:bg-gray-50"
+              >
+                <ReplyAll className="w-3 h-3 mr-1" />
+                All
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => onForward(thread.messages[thread.messages.length - 1])}
+                className="text-xs px-2 py-0.5 h-6 border-gray-300 text-gray-700 hover:bg-gray-50"
+              >
+                <Forward className="w-3 h-3" />
+              </Button>
+
+              {/* Expand/collapse controls */}
+              <div className="w-px h-4 bg-gray-300 mx-1"></div>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={expandAll}
+                className="text-xs px-1 py-0.5 h-6 text-gray-600 hover:text-blue-600"
+              >
+                <ChevronDown className="w-3 h-3" />
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={collapseAll}
+                className="text-xs px-1 py-0.5 h-6 text-gray-600 hover:text-blue-600"
+              >
+                <ChevronUp className="w-3 h-3" />
+              </Button>
+            </div>
         </div>
 
-        {/* Main header content */}
-        <div className="px-4 py-3">
-          <div className="flex items-start justify-between">
+        {/* Compact header */}
+        <div className="px-4 py-2">
+          <div className="flex items-center justify-between">
             <div className="flex-1 min-w-0">
-              <div className="flex items-center gap-2 mb-2">
-                <h1 className="text-lg font-semibold text-gray-900 truncate">{thread.subject}</h1>
-                <Badge variant="outline" className="text-xs px-2 py-0.5 bg-blue-50 text-blue-700 border-blue-200">
-                  {thread.messages.length}
-                </Badge>
+              <div className="flex items-center gap-2 mb-1">
+                <h1 className="text-base font-semibold text-gray-900 truncate">{thread.subject}</h1>
+           
               </div>
-              <div className="flex items-center gap-3 text-xs text-gray-500">
+              <div className="flex items-center gap-2 text-xs text-gray-500">
                 <div className="flex items-center gap-1">
                   <Clock className="w-3 h-3" />
-                  <span>{thread.messages.length} messages</span>
+                  <span>{thread.messages.length} msg</span>
                 </div>
                 <span>•</span>
                 <div className="flex items-center gap-1">
@@ -470,13 +605,13 @@ export default function EmailThread({
                     {thread.participants.slice(0, 2).map((participant, idx) => (
                       <div
                         key={idx}
-                        className="w-4 h-4 bg-gradient-to-br from-blue-400 to-purple-500 rounded-full border border-white flex items-center justify-center text-xs font-medium text-white"
+                        className="w-3 h-3 bg-gradient-to-br from-blue-400 to-purple-500 rounded-full border border-white flex items-center justify-center text-xs font-medium text-white"
                       >
                         {participant.charAt(0).toUpperCase()}
                       </div>
                     ))}
                     {thread.participants.length > 2 && (
-                      <div className="w-4 h-4 bg-gray-300 rounded-full border border-white flex items-center justify-center text-xs font-medium text-gray-600">
+                      <div className="w-3 h-3 bg-gray-300 rounded-full border border-white flex items-center justify-center text-xs font-medium text-gray-600">
                         +{thread.participants.length - 2}
                       </div>
                     )}
@@ -486,90 +621,7 @@ export default function EmailThread({
               </div>
             </div>
 
-            <div className="flex items-center gap-2">
-              {/* Compact AI buttons */}
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={handleSummarize}
-                disabled={summarizing}
-                className="text-xs px-2 py-1 h-7 border-amber-200 text-amber-700 hover:bg-amber-50"
-              >
-                {summarizing ? (
-                  <Sparkles className="w-3 h-3 animate-spin mr-1" />
-                ) : (
-                  <Sparkles className="w-3 h-3 mr-1" />
-                )}
-                {summarizing ? 'Analyzing...' : 'Summarize'}
-              </Button>
-
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={handleSuggestReplies}
-                disabled={suggesting}
-                className="text-xs px-2 py-1 h-7 border-blue-200 text-blue-700 hover:bg-blue-50"
-              >
-                {suggesting ? (
-                  <Brain className="w-3 h-3 animate-pulse mr-1" />
-                ) : (
-                  <Wand2 className="w-3 h-3 mr-1" />
-                )}
-                {suggesting ? 'Thinking...' : 'Suggest'}
-              </Button>
-
-              <div className="flex items-center gap-1">
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={expandAll}
-                  className="text-xs px-2 py-1 h-7 text-gray-600 hover:text-blue-600"
-                >
-                  <ChevronDown className="w-3 h-3" />
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={collapseAll}
-                  className="text-xs px-2 py-1 h-7 text-gray-600 hover:text-blue-600"
-                >
-                  <ChevronUp className="w-3 h-3" />
-                </Button>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* Action bar */}
-        <div className="flex items-center justify-between px-4 py-2 bg-gray-50 border-t border-gray-100">
-          <div className="flex items-center gap-2">
-            <Button
-              onClick={() => onReply(thread.messages[thread.messages.length - 1])}
-              className="bg-blue-600 hover:bg-blue-700 text-white text-sm px-3 py-1.5 h-8"
-            >
-              <Reply className="w-3 h-3 mr-1" />
-              Reply
-            </Button>
-            <Button
-              variant="outline"
-              onClick={() => onReplyAll(thread.messages[thread.messages.length - 1])}
-              className="text-sm px-3 py-1.5 h-8 border-gray-300 text-gray-700 hover:bg-gray-50"
-            >
-              <ReplyAll className="w-3 h-3 mr-1" />
-              Reply All
-            </Button>
-            <Button
-              variant="outline"
-              onClick={() => onForward(thread.messages[thread.messages.length - 1])}
-              className="text-sm px-3 py-1.5 h-8 border-gray-300 text-gray-700 hover:bg-gray-50"
-            >
-              <Forward className="w-3 h-3 mr-1" />
-              Forward
-            </Button>
-          </div>
-
-          <div className="text-xs text-gray-500">
-            {thread.messages.length} {thread.messages.length === 1 ? 'message' : 'messages'} • {thread.participants.length} participants
+            {/* Combined action toolbar */}
           </div>
         </div>
       </div>
@@ -660,11 +712,7 @@ export default function EmailThread({
                           <span className="text-xs text-gray-500 font-medium">
                             {formatDate(message.date)}
                           </span>
-                          {message.labels.map((label, labelIndex) => (
-                            <Badge key={`${message.id}-${label}-${labelIndex}`} variant="secondary" className="text-xs px-2 py-0.5">
-                              {label}
-                            </Badge>
-                          ))}
+                         
                         </div>
 
                         <div className="text-sm text-gray-600 mb-2">
@@ -711,47 +759,16 @@ export default function EmailThread({
                   {/* Expanded message content */}
                   {isExpanded && (
                     <div className="px-4 pb-4">
-                      {/* Content container with modern styling */}
+                      {/* Content container with robust email rendering */}
                       <div className="bg-white rounded-lg border border-gray-100 overflow-hidden">
-                        <EmailHtmlFrame message={message} />
+                        <EmailContent
+                          threadId={threadId}
+                          messageId={message.id}
+                          allowRemoteImages={false}
+                        />
                       </div>
 
-                      {/* Modern Attachments */}
-                      {message.attachments && message.attachments.length > 0 && (
-                        <div className="mt-4 p-3 bg-gray-50 rounded-lg border border-gray-100">
-                          <h4 className="text-sm font-semibold text-gray-700 mb-3 flex items-center gap-2">
-                            <Paperclip className="w-4 h-4" />
-                            {message.attachments.length} attachment{message.attachments.length > 1 ? 's' : ''}
-                          </h4>
-                          <div className="grid gap-2">
-                            {message.attachments.map((attachment) => (
-                              <div
-                                key={attachment.id}
-                                className="flex items-center gap-3 p-2 bg-white rounded-lg border border-gray-100 hover:border-blue-200 hover:bg-blue-50/30 transition-all cursor-pointer group"
-                              >
-                                <div className="w-8 h-8 bg-blue-100 rounded-lg flex items-center justify-center flex-shrink-0 group-hover:bg-blue-200 transition-colors">
-                                  <FileText className="w-4 h-4 text-blue-600" />
-                                </div>
-                                <div className="flex-1 min-w-0">
-                                  <div className="text-sm font-medium text-gray-900 truncate">
-                                    {attachment.name || 'Attachment'}
-                                  </div>
-                                  <div className="text-xs text-gray-500">
-                                    {formatFileSize(attachment.size || 0)}
-                                  </div>
-                                </div>
-                                <Button
-                                  variant="ghost"
-                                  size="sm"
-                                  className="p-1.5 opacity-0 group-hover:opacity-100 transition-opacity"
-                                >
-                                  <Download className="w-4 h-4 text-gray-500" />
-                                </Button>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      )}
+                      {/* Attachments now handled by EmailContent component */}
 
                       {/* Quick Actions */}
                       <div className="mt-4 flex items-center justify-between pt-3 border-t border-gray-100">

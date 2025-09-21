@@ -14,4 +14,16 @@ export default defineConfig({
       "@": path.resolve(__dirname, "./src"),
     },
   },
+  server: {
+    proxy: {
+      // Proxy API requests to backend server
+      '/emails': 'http://localhost:3000',
+      '/gmail': 'http://localhost:3000',
+      '/api': 'http://localhost:3000',
+      '/auth': 'http://localhost:3000',
+      '/sync': 'http://localhost:3000',
+      '/webhooks': 'http://localhost:3000',
+      '/ai': 'http://localhost:3000'
+    }
+  }
 });

@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Test New Email Arrival</title>
+</head>
+<body>
+    <h1>Test New Email Arrival</h1>
+    <p>This script tests the new email arrival functionality in your Ainbox app.</p>
+
+    <h2>Instructions:</h2>
+    <ol>
+        <li>🚀 Open your Ainbox app: <a href="http://localhost:5177" target="_blank">http://localhost:5177</a></li>
+        <li>📋 Open Developer Tools → Console in your Ainbox app</li>
+        <li>🔑 Login to your app and navigate to the inbox</li>
+        <li>🧪 Click the button below to simulate a new email arrival</li>
+        <li>👀 Watch the console for debug logs and see if the new email appears at the top of your list</li>
+    </ol>
+
+    <button onclick="testNewEmail()" style="padding: 10px 20px; font-size: 16px; background: #007bff; color: white; border: none; border-radius: 5px; cursor: pointer;">
+        🧪 Simulate New Email Arrival
+    </button>
+
+    <div id="result" style="margin-top: 20px; padding: 10px; background: #f8f9fa; border-radius: 5px; min-height: 50px;"></div>
+
+    <script>
+        async function testNewEmail() {
+            const result = document.getElementById('result');
+            result.innerHTML = '🔄 Testing new email arrival...';
+
+            try {
+                // First check if the app is running
+                const appResponse = await fetch('http://localhost:5177', { mode: 'no-cors' });
+                console.log('Frontend app is running');
+
+                // Test the simulate endpoint (this will likely fail due to auth, but that's expected)
+                const response = await fetch('http://localhost:3001/api/gmail/test/simulate-new-email', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    credentials: 'include' // Include cookies for auth
+                });
+
+                if (response.ok) {
+                    const data = await response.json();
+                    result.innerHTML = `
+                        <div style="color: green;">
+                            ✅ <strong>Success!</strong> New email simulated successfully!
+                            <br>📧 Check your Ainbox app - the new email should appear at the top of the list.
+                            <br>🔍 Check the browser console for debug logs showing the new email flow.
+                        </div>
+                    `;
+                } else {
+                    const errorText = await response.text();
+                    result.innerHTML = `
+                        <div style="color: orange;">
+                            ⚠️ <strong>Authentication Required:</strong> ${response.status}
+                            <br><br>This is expected! The endpoint requires authentication.
+                            <br><br>📋 <strong>Alternative Test Method:</strong>
+                            <br>1. Go to your Ainbox app (${window.open ? '<a href="http://localhost:5177" target="_blank">http://localhost:5177</a>' : 'http://localhost:5177'})
+                            <br>2. Open Developer Tools → Console
+                            <br>3. Paste this code in the console:
+                            <br><br>
+                            <pre style="background: #f0f0f0; padding: 10px; margin: 10px 0; border-radius: 3px; font-family: monospace; font-size: 12px; overflow-x: auto;">
+// Simulate receiving a new email via the real-time bridge
+window.dispatchEvent(new CustomEvent('reactNewEmail', {
+    detail: {
+        email: {
+            id: 'test_' + Date.now(),
+            threadId: 'thread_' + Date.now(),
+            subject: 'Test New Email - Manual Simulation',
+            from: 'Test Sender &lt;test@example.com&gt;',
+            to: 'you@example.com',
+            date: new Date().toISOString(),
+            time: new Date().toLocaleTimeString(),
+            isRead: false,
+            isStarred: false,
+            snippet: 'This is a manually simulated test email.',
+            preview: 'This is a manually simulated test email.',
+            labels: ['new'],
+            hasAttachment: false
+        },
+        timestamp: new Date().toISOString()
+    }
+}));
+console.log('📧 Manual new email simulation triggered!');</pre>
+                            <br>4. Watch for debug logs and see if the email appears at the top of your list!
+                        </div>
+                    `;
+                }
+            } catch (error) {
+                result.innerHTML = `
+                    <div style="color: red;">
+                        ❌ <strong>Error:</strong> ${error.message}
+                        <br><br>Make sure your servers are running:
+                        <br>• Backend: http://localhost:3001
+                        <br>• Frontend: http://localhost:5177
+                    </div>
+                `;
+            }
+        }
+    </script>
+</body>
+</html>

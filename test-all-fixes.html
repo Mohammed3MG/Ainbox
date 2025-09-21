@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Test All Email Fixes</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        .test-section { background: #f5f5f5; padding: 15px; margin: 10px 0; border-radius: 5px; }
+        .step { background: white; padding: 10px; margin: 5px 0; border-left: 4px solid #007bff; }
+        .expected { background: #e7f5e7; border-left: 4px solid #28a745; }
+        .warning { background: #fff3cd; border-left: 4px solid #ffc107; }
+        code { background: #f8f9fa; padding: 2px 5px; border-radius: 3px; font-family: monospace; }
+    </style>
+</head>
+<body>
+    <h1>🧪 Comprehensive Email System Test</h1>
+    <p>This guide will help you verify all three critical issues are fixed:</p>
+
+    <div class="test-section">
+        <h2>🔧 Setup Instructions</h2>
+        <div class="step">
+            <strong>1. Open your Ainbox app:</strong> <a href="http://localhost:5177" target="_blank">http://localhost:5177</a>
+        </div>
+        <div class="step">
+            <strong>2. Open Developer Tools:</strong> Press F12 or right-click → "Inspect" → "Console" tab
+        </div>
+        <div class="step">
+            <strong>3. Clear console:</strong> Click the clear button (🗑️) to start fresh
+        </div>
+        <div class="step">
+            <strong>4. Login and navigate to Inbox</strong>
+        </div>
+    </div>
+
+    <div class="test-section">
+        <h2>📊 Test 1: Unread Count Accuracy</h2>
+        <div class="step">
+            <strong>Action:</strong> Load the inbox and observe the logs
+        </div>
+        <div class="expected">
+            <strong>✅ Expected Result:</strong> Console should show:<br>
+            <code>✅ Count validation PASSED: X unread emails</code>
+        </div>
+        <div class="warning">
+            <strong>🚨 If you see:</strong> <code>COUNT MISMATCH DETECTED!</code><br>
+            This means the unread count doesn't match the actual unread emails in the list.
+        </div>
+        <div class="step">
+            <strong>Visual Check:</strong> Compare the sidebar unread count with the number of unread (bold) emails in the list
+        </div>
+    </div>
+
+    <div class="test-section">
+        <h2>🖱️ Test 2: Email Click Status Change</h2>
+        <div class="step">
+            <strong>Action:</strong> Click on an <strong>unread email</strong> (should be bold text)
+        </div>
+        <div class="expected">
+            <strong>✅ Expected Result:</strong> Console should show:<br>
+            <code>📧 Email selected: [ID], Current isRead: false</code><br>
+            <code>📧 Converting message ID [ID] to thread ID [THREAD_ID]</code><br>
+            <code>📧 Frontend: Marking 1 email(s) as read: [THREAD_ID]</code><br>
+            <code>📧 Updated unread count from X to Y</code>
+        </div>
+        <div class="step">
+            <strong>Visual Check:</strong> The email should change from bold to normal text and unread count should decrease by 1
+        </div>
+    </div>
+
+    <div class="test-section">
+        <h2>🔄 Test 3: Gmail Sync Verification</h2>
+        <div class="step">
+            <strong>Action:</strong> After clicking an email, check the server logs in your terminal
+        </div>
+        <div class="expected">
+            <strong>✅ Expected Backend Logs:</strong><br>
+            <code>📧 Gmail mark-read request received for 1 email(s): [THREAD_ID]</code><br>
+            <code>🔄 Syncing read state to Gmail for thread [THREAD_ID]</code><br>
+            <code>✅ Successfully synced read state to Gmail for thread [THREAD_ID]</code>
+        </div>
+        <div class="step">
+            <strong>Gmail Web Check:</strong> Open <a href="https://mail.google.com" target="_blank">Gmail</a> in another tab and verify the email is marked as read there too
+        </div>
+    </div>
+
+    <div class="test-section">
+        <h2>🔍 Advanced Testing</h2>
+        <div class="step">
+            <strong>Test Multiple Emails:</strong> Select multiple emails and mark them as read
+        </div>
+        <div class="step">
+            <strong>Test Mark as Unread:</strong> Right-click a read email and mark as unread (if available)
+        </div>
+        <div class="step">
+            <strong>Test External Changes:</strong> Mark an email as read/unread in Gmail web and watch for real-time updates in your app
+        </div>
+    </div>
+
+    <div class="test-section">
+        <h2>🚨 Troubleshooting</h2>
+
+        <h3>Count Mismatch Issues:</h3>
+        <div class="warning">
+            If you see count mismatches, look for these patterns in console:
+            <ul>
+                <li><code>📊 Skipping backend count update - optimistic update already applied</code> - This is good!</li>
+                <li><code>📊 Socket.IO unread count update received</code> - External count updates</li>
+                <li>Multiple count updates happening simultaneously</li>
+            </ul>
+        </div>
+
+        <h3>Email Click Issues:</h3>
+        <div class="warning">
+            If emails don't change status when clicked:
+            <ul>
+                <li>Check for <code>Failed to mark email as read</code> errors</li>
+                <li>Verify you see ID conversion logs</li>
+                <li>Check if the email was already read</li>
+            </ul>
+        </div>
+
+        <h3>Gmail Sync Issues:</h3>
+        <div class="warning">
+            If changes don't appear in Gmail:
+            <ul>
+                <li>Look for <code>❌ Failed to sync read state</code> in server logs</li>
+                <li>Check authentication errors</li>
+                <li>Verify the thread ID is valid</li>
+            </ul>
+        </div>
+    </div>
+
+    <div class="test-section">
+        <h2>📋 Test Results Checklist</h2>
+        <div class="step">
+            ☐ <strong>Count Accuracy:</strong> Unread count matches unread emails in list
+        </div>
+        <div class="step">
+            ☐ <strong>Visual Updates:</strong> Clicking email changes appearance immediately
+        </div>
+        <div class="step">
+            ☐ <strong>Count Updates:</strong> Unread count decreases when clicking unread emails
+        </div>
+        <div class="step">
+            ☐ <strong>Backend Sync:</strong> Server logs show successful Gmail API calls
+        </div>
+        <div class="step">
+            ☐ <strong>Gmail Sync:</strong> Changes appear in Gmail web interface
+        </div>
+        <div class="step">
+            ☐ <strong>No Errors:</strong> No console errors or server errors
+        </div>
+    </div>
+
+    <div style="background: #d4edda; padding: 15px; border-radius: 5px; margin-top: 20px;">
+        <strong>🎉 Success Criteria:</strong> All checkboxes should be ✅ for the fixes to be complete!
+    </div>
+</body>
+</html>

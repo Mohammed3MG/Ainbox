@@ -5,10 +5,10 @@ import EmailSidebar from '../components/email/EmailSidebar'
 import EmailHeader from '../components/email/EmailHeader'
 import EmailList from '../components/email/EmailList'
 import EmailThread from '../components/email/EmailThread'
-import ComposeEmail from '../components/email/ComposeEmail'
 import RealTimeEmailBridge from '../components/email/RealTimeEmailBridge'
+import { ComposeManager, AccessibilityProvider, useCompose } from '../components/compose'
 
-export default function Dashboard() {
+function DashboardContent() {
   const { user, terms } = useSession()
   const {
     emails,
@@ -32,11 +32,12 @@ export default function Dashboard() {
     sendEmail: sendEmailMessage
   } = useEmail()
 
+  const { compose, reply, forward } = useCompose()
+
   const [activeFolder, setActiveFolder] = useState('inbox')
   const [searchQuery, setSearchQuery] = useState('')
   const [selectedEmailId, setSelectedEmailId] = useState(null)
-  const [showCompose, setShowCompose] = useState(false)
-  const [composeData, setComposeData] = useState(null)
+  const [selectedThreadId, setSelectedThreadId] = useState(null)
   const [view, setView] = useState('list') // 'list' or 'thread'
 
   // Load emails when folder changes
@@ -60,6 +61,7 @@ export default function Dashboard() {
   const handleFolderChange = (folder) => {
     setActiveFolder(folder)
     setSelectedEmailId(null)
+    setSelectedThreadId(null)
     setView('list')
     clearSelection()
     // Always reset to first page on folder click, even if same folder
@@ -71,6 +73,7 @@ export default function Dashboard() {
     const selected = emails.find(e => e.id === emailId)
     console.log('📧 Email selected:', emailId, 'Current isRead:', selected?.isRead)
     console.log('📧 Email object:', selected)
+    console.log('📧 Using threadId for thread view:', selected?.threadId)
     console.log('📧 Current unread count before action:', unreadCount)
 
     if (selected && !selected.isRead) {
@@ -88,7 +91,9 @@ export default function Dashboard() {
       console.log('📧 Email already read or not found, skipping mark as read')
     }
 
-    setSelectedEmailId(emailId)
+    // Store both email ID and thread ID for different purposes
+    setSelectedEmailId(emailId) // Keep email ID for actions
+    setSelectedThreadId(selected?.threadId || emailId) // Use thread ID for EmailThread component
     setView('thread')
   }
 
@@ -102,33 +107,20 @@ export default function Dashboard() {
   }
 
   const handleCompose = (data = null) => {
-    setComposeData(data)
-    setShowCompose(true)
-  }
-
-  const handleComposeClose = () => {
-    setShowCompose(false)
-    setComposeData(null)
-  }
-
-  const handleSendEmail = async (emailData) => {
-    try {
-      await sendEmailMessage(emailData)
-      setShowCompose(false)
-      setComposeData(null)
-      // Refresh inbox if currently viewing it
-      if (activeFolder === 'inbox') {
-        loadFirstPage('inbox', searchQuery)
-      }
-    } catch (error) {
-      console.error('Failed to send email:', error)
-      throw error
+    if (data?.replyTo) {
+      reply(data.replyTo)
+    } else if (data?.forward) {
+      forward(data.forward)
+    } else {
+      compose()
     }
   }
+
 
   const handleBackToList = () => {
     setView('list')
     setSelectedEmailId(null)
+    setSelectedThreadId(null)
   }
 
   return (
@@ -177,7 +169,7 @@ export default function Dashboard() {
           />
         ) : (
           <EmailThread
-            threadId={selectedEmailId}
+            threadId={selectedThreadId}
             onReply={(message) => handleCompose({ replyTo: message })}
             onReplyAll={(message) => handleCompose({ replyTo: message, replyAll: true })}
             onForward={(message) => handleCompose({ forward: message })}
@@ -188,15 +180,16 @@ export default function Dashboard() {
         )}
       </div>
 
-      {/* Compose modal */}
-      <ComposeEmail
-        isOpen={showCompose}
-        onClose={handleComposeClose}
-        onSend={handleSendEmail}
-        replyTo={composeData?.replyTo}
-        forward={composeData?.forward}
-        replyAll={composeData?.replyAll}
-      />
+      {/* New Compose System */}
+      <ComposeManager />
     </div>
+  )
+}
+
+export default function Dashboard() {
+  return (
+    <AccessibilityProvider>
+      <DashboardContent />
+    </AccessibilityProvider>
   )
 }
