@@ -49,6 +49,8 @@ export default function RealTimeEmailBridge() {
     };
 
     const handleEmailUpdated = (data) => {
+      console.log('🌉 RealTimeEmailBridge handleEmailUpdated:', data);
+
       if (data?.changeType === 'added') {
         window.dispatchEvent(
           new CustomEvent('reactNewEmail', {
@@ -64,6 +66,27 @@ export default function RealTimeEmailBridge() {
             detail: {
               emailId: data.messageId ?? data.emailId,
               timestamp: data.timestamp,
+            },
+          }),
+        );
+      } else {
+        // Handle read/unread status changes (no specific changeType)
+        console.log('🌉 Processing email status change:', {
+          emailId: data.emailId,
+          isRead: data.isRead,
+          changeType: data.changeType || 'status_change'
+        });
+
+        window.dispatchEvent(
+          new CustomEvent('reactEmailStatusUpdate', {
+            detail: {
+              emailId: data.emailId || data.messageId,
+              messageId: data.messageId || data.emailId,
+              threadId: data.threadId,
+              isRead: data.isRead,
+              changeType: data.changeType || (data.isRead ? 'marked_read' : 'marked_unread'),
+              source: 'sse_email_updated',
+              timestamp: data.timestamp || new Date().toISOString(),
             },
           }),
         );

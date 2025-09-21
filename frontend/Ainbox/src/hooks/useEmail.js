@@ -44,6 +44,42 @@ function applyReadFlagAndLabels(email, isRead) {
   return next;
 }
 
+// Debug helper to log email list state changes
+function logEmailListState(emails, action, emailId = null) {
+  console.log('\n' + '='.repeat(80));
+  console.log(`📧 EMAIL LIST STATE DEBUG - ${action.toUpperCase()}`);
+  console.log('='.repeat(80));
+  console.log(`📊 Total emails: ${emails.length}`);
+  console.log(`📊 Unread emails: ${emails.filter(e => !e.isRead).length}`);
+  console.log(`📊 Read emails: ${emails.filter(e => e.isRead).length}`);
+
+  if (emailId) {
+    const targetEmail = emails.find(e => e.id === emailId || e.threadId === emailId || e.messageId === emailId);
+    if (targetEmail) {
+      console.log(`🎯 Target email ${emailId}:`, {
+        id: targetEmail.id,
+        isRead: targetEmail.isRead,
+        subject: targetEmail.subject?.substring(0, 50) + '...',
+        from: targetEmail.from
+      });
+    } else {
+      console.log(`❌ Target email ${emailId} NOT FOUND in list`);
+    }
+  }
+
+  console.log('\n📋 Email List Summary:');
+  emails.slice(0, 10).forEach((email, index) => {
+    const status = email.isRead ? '✅ READ  ' : '🔴 UNREAD';
+    const subject = (email.subject || 'No Subject').substring(0, 40);
+    console.log(`  ${index + 1}. ${status} | ${email.id} | ${subject}...`);
+  });
+
+  if (emails.length > 10) {
+    console.log(`  ... and ${emails.length - 10} more emails`);
+  }
+  console.log('='.repeat(80) + '\n');
+}
+
 export function useEmail() {
   const [emails, setEmails] = useState([])
   const [loading, setLoading] = useState(false)
@@ -59,6 +95,12 @@ export function useEmail() {
   const [spamUnreadCount, setSpamUnreadCount] = useState(0)
   const unsubscribeRef = useRef(null)
 
+  // Debug: Log email state changes whenever emails array changes
+  useEffect(() => {
+    if (emails.length > 0) {
+      logEmailListState(emails, 'EMAILS_STATE_CHANGED');
+    }
+  }, [emails])
 
   // Load emails for a specific folder
   const loadEmails = useCallback(withErrorHandling(async (folder = 'inbox', pageOrCursor = 1, search = '', _replace = true) => {
@@ -228,18 +270,26 @@ export function useEmail() {
   const performEmailAction = useCallback(withErrorHandling(async (action, emailIds) => {
     const ids = Array.isArray(emailIds) ? emailIds : [emailIds]
 
-    console.log('performEmailAction called:', action, ids)
+    console.log('📧 performEmailAction called:', action, ids)
+    console.log('📧 Current unread count before action:', unreadCount)
 
     // Update local state optimistically FIRST (match by id, threadId, messageId)
     let unreadDelta = 0
-    setEmails(prev => prev.map(email => {
-      const matches = ids.includes(email.id) || ids.includes(email.threadId) || ids.includes(email.messageId)
-      if (matches) {
-        switch (action) {
-          case 'read':
-            console.log('Updating email to read:', email.id)
-            if (!email.isRead) unreadDelta -= 1
-            return { ...email, isRead: true }
+    setEmails(prev => {
+      console.log('📧 BEFORE optimistic update:');
+      logEmailListState(prev, 'BEFORE_OPTIMISTIC_UPDATE', ids[0]);
+
+      const updated = prev.map(email => {
+        const matches = ids.includes(email.id) || ids.includes(email.threadId) || ids.includes(email.messageId)
+        if (matches) {
+          switch (action) {
+            case 'read':
+              console.log('📧 Updating email to read:', email.id, 'was unread:', !email.isRead)
+              if (!email.isRead) {
+                unreadDelta -= 1
+                console.log('📧 Unread delta decreased by 1, new delta:', unreadDelta)
+              }
+              return { ...email, isRead: true }
           case 'unread':
             if (email.isRead) unreadDelta += 1
             return { ...email, isRead: false }
@@ -254,13 +304,25 @@ export function useEmail() {
           default:
             return email
         }
-      }
-      return email
-    }).filter(Boolean))
+        }
+        return email
+      })
+
+      const filtered = updated.filter(Boolean);
+
+      console.log('📧 AFTER optimistic update:');
+      logEmailListState(filtered, 'AFTER_OPTIMISTIC_UPDATE', ids[0]);
+
+      return filtered;
+    })
 
     // Adjust unread counters locally first (inbox only)
-    setUnreadCount((prev) => Math.max(0, prev + unreadDelta))
-    console.log('Unread delta:', unreadDelta)
+    console.log('📧 Applying unread delta:', unreadDelta, 'to current count:', unreadCount)
+    setUnreadCount((prev) => {
+      const newCount = Math.max(0, prev + unreadDelta)
+      console.log('📧 Updated unread count from', prev, 'to', newCount)
+      return newCount
+    })
 
     // Clear selection after bulk actions
     if (ids.length > 1 || selectedEmails.has(ids[0])) {
@@ -411,6 +473,7 @@ export function useEmail() {
       let foundMatch = false;
       setEmails(prev => {
         console.log(`🔍 Checking ${prev.length} emails for match with ${incomingId}`);
+        logEmailListState(prev, 'BEFORE_SOCKET_UPDATE', incomingId);
 
         const updatedEmails = prev.map((email, index) => {
           const isMatch = matchesEmailByAnyId(email, incomingId);
@@ -444,6 +507,7 @@ export function useEmail() {
         }
 
         console.log('📝 Email list updated via Socket.IO, match found:', foundMatch);
+        logEmailListState(updatedEmails, 'AFTER_SOCKET_UPDATE', incomingId);
         return updatedEmails;
       });
     })
