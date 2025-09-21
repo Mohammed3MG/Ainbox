@@ -227,23 +227,44 @@ export default function EmailList({
     // Use stable identity; include read-state so a toggle forces a re-render
     const id = e?.id ?? e?.messageId ?? index;
     const r = e?.isRead ? 'r' : 'u';
-    return `${id}-${r}`;
+    const key = `${id}-${r}`;
+    console.log(`🔑 VirtualList itemKey for index ${index}: ${key} (email: ${id}, isRead: ${e?.isRead})`);
+    return key;
   }}
 >
 
 
           {({ index, style }) => {
             const email = filteredEmails[index]
+
+            // Always log email rendering for debugging
+            console.log(`🎨 EmailList: Rendering email ${email.id} at index ${index}:`, {
+              isRead: email.isRead,
+              readStatus: email.isRead ? 'READ' : 'UNREAD',
+              id: email.id,
+              threadId: email.threadId,
+              messageId: email.messageId
+            });
+
+            const backgroundColor = selectedEmailId === email.id
+              ? undefined // Let selection color take precedence
+              : email.isRead
+                ? 'oklch(98.5% 0.002 247.839)' // Read email background
+                : 'oklch(95.4% 0.038 75.164)' // Unread email background
+
+            console.log(`🎨 Background color for ${email.id}: ${backgroundColor || 'selection color'}`);
+
             return (
               <div
                 key={`${email.id}-${email.isRead ? 'read' : 'unread'}`}
                 style={{
                   ...style,
-                  backgroundColor: selectedEmailId === email.id
-                    ? undefined // Let selection color take precedence
-                    : email.isRead
-                      ? 'oklch(98.5% 0.002 247.839)' // Read email background
-                      : 'oklch(95.4% 0.038 75.164)' // Unread email background
+                  backgroundColor
+                }}
+                ref={(el) => {
+                  if (el) {
+                    console.log(`🎨 EmailList: DOM element for ${email.id} rendered with background: ${el.style.backgroundColor}`);
+                  }
                 }}
                 className={cn(
                   "email-item flex items-center gap-4 p-4 hover:bg-gray-50 cursor-pointer transition-colors border-b border-gray-100",

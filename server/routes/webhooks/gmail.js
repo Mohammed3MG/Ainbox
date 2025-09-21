@@ -12,12 +12,15 @@ const { broadcastToUser } = require('../../lib/sse');
  * This endpoint receives notifications from Google Cloud Pub/Sub
  * when Gmail mailbox changes occur
  */
-router.post('/gmail/notifications', express.raw({ type: 'application/json' }), async (req, res) => {
+router.post('/gmail/notifications', express.json(), async (req, res) => {
   try {
     console.log('📨 Received Gmail Push notification');
+    console.log('🔍 Raw request body:', req.body);
+    console.log('🔍 Headers:', JSON.stringify(req.headers, null, 2));
 
-    // Parse Pub/Sub message
-    const pubsubMessage = JSON.parse(req.body.toString());
+    // Parse Pub/Sub message (already parsed by express.json())
+    const pubsubMessage = req.body;
+    console.log('🔍 Parsed Pub/Sub message:', JSON.stringify(pubsubMessage, null, 2));
 
     if (!pubsubMessage.message || !pubsubMessage.message.data) {
       console.warn('⚠️  Invalid Pub/Sub message format');
@@ -31,7 +34,8 @@ router.post('/gmail/notifications', express.raw({ type: 'application/json' }), a
       Buffer.from(pubsubMessage.message.data, 'base64').toString()
     );
 
-    console.log('📧 Gmail notification data:', messageData);
+    console.log('📧 Gmail notification data:', JSON.stringify(messageData, null, 2));
+    console.log('🔍 Decoded fields - Email:', messageData.emailAddress, 'HistoryId:', messageData.historyId);
 
     const { emailAddress, historyId } = messageData;
 
@@ -168,6 +172,7 @@ async function handleGmailNotification(user, notificationHistoryId) {
   }
 
   // Emit label changes as immediate read/unread updates
+  console.log(`🔍 Processing ${labelChanges.length} label changes for user ${userId}`);
   for (const ch of labelChanges) {
     const add = ch.add || [];
     const remove = ch.remove || [];
@@ -177,11 +182,27 @@ async function handleGmailNotification(user, notificationHistoryId) {
     if (isUnreadAdded) isRead = false;
     if (isUnreadRemoved) isRead = true;
 
+    console.log(`🔍 Label change - MessageId: ${ch.id}, Added: [${add.join(',')}], Removed: [${remove.join(',')}], IsRead: ${isRead}`);
+
     if (typeof isRead === 'boolean') {
+      console.log(`⚡ IMMEDIATE STATUS UPDATE - MessageId: ${ch.id}, IsRead: ${isRead}, Change: ${isRead ? 'marked_read' : 'marked_unread'}`);
+
       // Socket event for row styling update
-      try { socketIOService.emailUpdated(userId, { id: ch.id, isRead, source: 'pubsub_immediate' }); } catch (_) {}
+      try {
+        socketIOService.emailUpdated(userId, { id: ch.id, isRead, source: 'pubsub_immediate' });
+        console.log(`✅ Socket.IO update sent for message ${ch.id}`);
+      } catch (e) {
+        console.error(`❌ Socket.IO update failed:`, e);
+      }
+
       // SSE immediate event for UI bridge
-      try { broadcastToUser(userId, { type: 'email_status_updated_immediate', messageId: ch.id, isRead, changeType: isRead ? 'marked_read' : 'marked_unread', priority: 'immediate', timestamp: new Date().toISOString() }); } catch (_) {}
+      try {
+        const sseData = { type: 'email_status_updated_immediate', messageId: ch.id, isRead, changeType: isRead ? 'marked_read' : 'marked_unread', priority: 'immediate', timestamp: new Date().toISOString() };
+        broadcastToUser(userId, sseData);
+        console.log(`✅ SSE update sent for message ${ch.id}:`, sseData);
+      } catch (e) {
+        console.error(`❌ SSE update failed:`, e);
+      }
     }
   }
 

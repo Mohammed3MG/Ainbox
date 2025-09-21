@@ -60,31 +60,6 @@ export function useEmail() {
   const unsubscribeRef = useRef(null)
 
 
-    function matchesEmailByAnyId(email, anyId) {
-  if (!anyId) return false;
-  return (
-    email.id === anyId ||
-    email.threadId === anyId ||
-    email.messageId === anyId ||
-    email.conversationId === anyId ||
-    email.gmailMessageId === anyId ||
-    email.gmailThreadId === anyId
-  );
-}
-
-function applyReadFlagAndLabels(email, isRead) {
-  const next = { ...email, isRead: !!isRead };
-  if (Array.isArray(email.labels)) {
-    const hasUnread = email.labels.includes('UNREAD');
-    if (isRead && hasUnread) next.labels = email.labels.filter(l => l !== 'UNREAD');
-    else if (!isRead && !hasUnread) next.labels = [...email.labels, 'UNREAD'];
-    else next.labels = email.labels.slice();
-  }
-  return next;
-}
-
-
-
   // Load emails for a specific folder
   const loadEmails = useCallback(withErrorHandling(async (folder = 'inbox', pageOrCursor = 1, search = '', _replace = true) => {
     setLoading(true)
@@ -421,19 +396,56 @@ function applyReadFlagAndLabels(email, isRead) {
     console.log('🔌 [HOOK] Socket.IO connection initiated')
 
     const unsubscribeEmailUpdated = socketService.addEventListener('emailUpdated', (data) => {
-      const incomingId =
-        data.emailId || data.gmailMessageId || data.messageId || data.threadId || data.conversationId;
-      if (!incomingId) return;
+      console.log('🔥 Socket.IO emailUpdated received:', data);
 
-      setEmails(prev =>
-        prev.map(email => {
-          if (!matchesEmailByAnyId(email, incomingId)) return email;
-          if (typeof data.isRead === 'boolean') {
-            return applyReadFlagAndLabels(email, data.isRead);
+      const incomingId =
+        data.emailId || data.gmailMessageId || data.messageId || data.threadId || data.conversationId || data.id;
+      if (!incomingId) {
+        console.warn('⚠️ No valid ID found in emailUpdated data:', data);
+        return;
+      }
+
+      console.log(`🔍 Looking for email with ID: ${incomingId}`);
+      console.log(`🔍 Current emails in state:`, emails.map(e => ({ id: e.id, threadId: e.threadId, messageId: e.messageId, isRead: e.isRead })));
+
+      let foundMatch = false;
+      setEmails(prev => {
+        console.log(`🔍 Checking ${prev.length} emails for match with ${incomingId}`);
+
+        const updatedEmails = prev.map((email, index) => {
+          const isMatch = matchesEmailByAnyId(email, incomingId);
+          if (isMatch) {
+            foundMatch = true;
+            console.log(`✅ MATCH FOUND at index ${index}:`, {
+              emailId: email.id,
+              threadId: email.threadId,
+              messageId: email.messageId,
+              gmailMessageId: email.gmailMessageId,
+              incomingId: incomingId,
+              currentIsRead: email.isRead,
+              newIsRead: data.isRead
+            });
+
+            if (typeof data.isRead === 'boolean') {
+              const updatedEmail = applyReadFlagAndLabels(email, data.isRead);
+              console.log(`🎨 COLOR FLIP - Email ${email.id}: ${email.isRead ? 'read' : 'unread'} → ${updatedEmail.isRead ? 'read' : 'unread'}`);
+              console.log(`🎨 Updated email object:`, updatedEmail);
+              return updatedEmail;
+            }
           }
           return email;
-        })
-      );
+        });
+
+        if (!foundMatch) {
+          console.warn(`❌ NO MATCH FOUND for ID: ${incomingId}`);
+          console.warn(`📧 Available email IDs:`, prev.map(e => e.id));
+          console.warn(`📧 Available threadIds:`, prev.map(e => e.threadId));
+          console.warn(`📧 Available messageIds:`, prev.map(e => e.messageId));
+        }
+
+        console.log('📝 Email list updated via Socket.IO, match found:', foundMatch);
+        return updatedEmails;
+      });
     })
 
     const unsubscribeCountUpdate = socketService.addEventListener('unreadCountUpdate', (data) => {
@@ -496,22 +508,39 @@ function applyReadFlagAndLabels(email, isRead) {
   useRealTimeEmailBridge(
     // 1) Immediate email status updates
     (data) => {
+      console.log('🌉 Real-Time Bridge emailStatusUpdate received:', data);
+
       const incomingId =
         data.emailId || data.gmailMessageId || data.messageId || data.threadId || data.conversationId;
-      if (!incomingId) return;
+      if (!incomingId) {
+        console.warn('⚠️ No valid ID found in Bridge data:', data);
+        return;
+      }
 
-      setEmails(prev =>
-        prev.map(email => {
+      console.log(`🔍 Bridge: Looking for email with ID: ${incomingId}`);
+
+      setEmails(prev => {
+        const updatedEmails = prev.map(email => {
           if (!matchesEmailByAnyId(email, incomingId)) return email;
+
+          console.log(`✅ Bridge: Found matching email: ${email.id}, current isRead: ${email.isRead}`);
+
           if (typeof data.isRead === 'boolean') {
-            return applyReadFlagAndLabels(email, data.isRead);
+            const updatedEmail = applyReadFlagAndLabels(email, data.isRead);
+            console.log(`🎨 BRIDGE COLOR FLIP - Email ${email.id}: ${email.isRead ? 'read' : 'unread'} → ${updatedEmail.isRead ? 'read' : 'unread'}`);
+            return updatedEmail;
           }
           return email;
-        })
-      );
+        });
+
+        console.log('📝 Email list updated via Real-Time Bridge');
+        return updatedEmails;
+      });
 
       if (typeof data.isRead === 'boolean') {
-        setUnreadCount(prev => Math.max(0, prev + (data.isRead ? -1 : 1)));
+        const delta = data.isRead ? -1 : 1;
+        setUnreadCount(prev => Math.max(0, prev + delta));
+        console.log(`📊 Unread count updated by ${delta}`);
       }
     },
     // 2) New emails

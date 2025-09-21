@@ -74,13 +74,22 @@ class SocketIOService {
 
     // Email update events
     this.socket.on('email_updated', (data) => {
-      console.log('📧 Socket.IO email updated:', data);
-      this.notifyListeners('emailUpdated', {
+      console.log('📧 Socket.IO email updated RAW:', data);
+      console.log('📧 data.email:', data.email);
+      console.log('📧 data.email.id:', data.email?.id);
+
+      const mappedData = {
         emailId: data.email?.id,
+        gmailMessageId: data.email?.id, // Add gmailMessageId as alias
+        messageId: data.email?.id,      // Add messageId as alias
+        id: data.email?.id,             // Add id as alias
         isRead: data.email?.isRead,
         timestamp: data.timestamp,
         source: data.source
-      });
+      };
+
+      console.log('📧 Mapped data for emailUpdated:', mappedData);
+      this.notifyListeners('emailUpdated', mappedData);
     });
 
     // Count update events
@@ -227,6 +236,8 @@ class SocketIOService {
 
   // Add event listener
   addEventListener(event, callback) {
+    console.log(`🔔 Adding listener for event: ${event}`);
+
     if (!this.listeners.has(event)) {
       this.listeners.set(event, new Set());
     }
@@ -252,6 +263,8 @@ class SocketIOService {
   // Notify all listeners for an event
   notifyListeners(event, data) {
     const eventListeners = this.listeners.get(event);
+    console.log(`📢 Notifying listeners for event: ${event}, listener count: ${eventListeners?.size || 0}`, data);
+
     if (eventListeners) {
       eventListeners.forEach(callback => {
         try {
@@ -260,6 +273,8 @@ class SocketIOService {
           console.error(`❌ Listener error for event ${event}:`, error);
         }
       });
+    } else {
+      console.warn(`⚠️ No listeners found for event: ${event}`);
     }
   }
 

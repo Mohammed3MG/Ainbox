@@ -223,8 +223,9 @@ export async function getEmails(folder = 'inbox', cursor = null, limit = 50, sea
           avatar: null
         }))
       } else {
+        // Preserve server-provided id (Gmail messageId of the latest message) and threadId
         emails = (response.threads || []).map(thread => ({
-          id: thread.threadId,
+          id: thread.id, // latest Gmail messageId for this thread (matches realtime events)
           threadId: thread.threadId,
           from: extractNameFromEmail(thread.from),
           fromEmail: extractEmailFromString(thread.from),

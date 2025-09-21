@@ -50,9 +50,9 @@ class GmailPubSubService {
       const watchRequest = {
         userId: 'me',
         requestBody: {
-          topicName: `projects/${process.env.GOOGLE_CLOUD_PROJECT_ID}/topics/${this.topicName}`,
+          topicName: this.topicName, // Already contains full path: projects/ainbox-471417/topics/fylApp
           labelIds: ['INBOX'], // Watch only INBOX
-          labelFilterAction: 'include',
+          labelFilterBehavior: 'include', // Gmail API uses 'labelFilterBehavior' not 'labelFilterAction'
         },
       };
 
@@ -105,7 +105,9 @@ class GmailPubSubService {
    */
   async ensureTopicExists() {
     try {
-      const topic = this.pubsub.topic(this.topicName);
+      // Extract just the topic name from the full path
+      const topicName = this.topicName.split('/').pop(); // Gets 'fylApp' from 'projects/ainbox-471417/topics/fylApp'
+      const topic = this.pubsub.topic(topicName);
       const [exists] = await topic.exists();
 
       if (!exists) {
@@ -131,12 +133,16 @@ class GmailPubSubService {
    */
   async ensureSubscriptionExists() {
     try {
-      const subscription = this.pubsub.subscription(this.subscriptionName);
+      // Extract just the subscription name from the full path
+      const subscriptionName = this.subscriptionName.split('/').pop(); // Gets 'fylApp_push'
+      const topicName = this.topicName.split('/').pop(); // Gets 'fylApp'
+
+      const subscription = this.pubsub.subscription(subscriptionName);
       const [exists] = await subscription.exists();
 
       if (!exists) {
-        console.log(`📊 Creating Pub/Sub subscription: ${this.subscriptionName}`);
-        await this.pubsub.topic(this.topicName).createSubscription(this.subscriptionName);
+        console.log(`📊 Creating Pub/Sub subscription: ${subscriptionName}`);
+        await this.pubsub.topic(topicName).createSubscription(subscriptionName);
         console.log(`✅ Pub/Sub subscription created: ${this.subscriptionName}`);
       } else {
         console.log(`✅ Pub/Sub subscription exists: ${this.subscriptionName}`);
@@ -377,6 +383,115 @@ class GmailPubSubService {
     } catch (error) {
       console.error(`❌ Failed to renew watch for user ${userId}:`, error);
       throw error;
+    }
+  }
+
+  /**
+   * Start listening for Pub/Sub messages from Gmail
+   * THIS IS CRITICAL - Without this, no real-time updates work!
+   */
+  async startPubSubListener() {
+    try {
+      console.log(`📡 Starting Pub/Sub listener for subscription: ${this.subscriptionName}`);
+
+      const subscriptionName = this.subscriptionName.split('/').pop(); // Gets 'fylApp_push'
+      const subscription = this.pubsub.subscription(subscriptionName);
+
+      // Handle incoming messages from Gmail
+      subscription.on('message', async (message) => {
+        try {
+          console.log('📨 Received Gmail Pub/Sub notification:', message.id);
+
+          // Parse the message data
+          const data = JSON.parse(message.data.toString());
+          console.log('📧 Gmail notification data:', data);
+
+          // Extract userId and historyId from the message
+          const { emailAddress, historyId } = data;
+
+          // Find the user by email address
+          let userId = null;
+          for (const [id, watchData] of this.watchedUsers.entries()) {
+            if (watchData.userEmail === emailAddress) {
+              userId = id;
+              break;
+            }
+          }
+
+          if (!userId) {
+            console.warn(`⚠️ No watched user found for email: ${emailAddress}`);
+            message.ack();
+            return;
+          }
+
+          console.log(`📧 Processing history changes for user ${userId} from historyId ${historyId}`);
+
+          // Process the history changes
+          const result = await this.processGmailHistoryChanges(userId, historyId);
+
+          // Send real-time updates to frontend
+          if (result && result.detailedEmailUpdates.length > 0) {
+            const gmailSyncService = require('../gmailSyncService');
+
+            for (const update of result.detailedEmailUpdates) {
+              // Send immediate status update
+              gmailSyncService.sendRealTimeUpdate(userId, {
+                type: 'email_status_updated_immediate',
+                messageId: update.messageId,
+                isRead: update.isRead,
+                changeType: update.changeType,
+                subject: update.subject,
+                from: update.from,
+                priority: 'immediate',
+                timestamp: update.timestamp
+              });
+            }
+          }
+
+          // Send count updates
+          const counts = await this.getInboxCounts(userId);
+          const gmailSyncService = require('../gmailSyncService');
+          gmailSyncService.sendRealTimeUpdate(userId, {
+            type: 'unread_count_updated',
+            unread: counts.unread,
+            total: counts.total,
+            source: 'pubsub_notification',
+            timestamp: counts.timestamp
+          });
+
+          // Acknowledge the message
+          message.ack();
+          console.log(`✅ Processed Gmail notification for user ${userId}`);
+
+        } catch (error) {
+          console.error('❌ Error processing Gmail Pub/Sub message:', error);
+          message.nack(); // Negative acknowledge - will retry
+        }
+      });
+
+      subscription.on('error', (error) => {
+        console.error('❌ Gmail Pub/Sub subscription error:', error);
+      });
+
+      console.log(`✅ Gmail Pub/Sub listener started successfully`);
+
+    } catch (error) {
+      console.error('❌ Failed to start Gmail Pub/Sub listener:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Stop Pub/Sub listener
+   */
+  async stopPubSubListener() {
+    try {
+      const subscriptionName = this.subscriptionName.split('/').pop(); // Gets 'fylApp_push'
+      const subscription = this.pubsub.subscription(subscriptionName);
+      subscription.removeAllListeners();
+      console.log(`🛑 Gmail Pub/Sub listener stopped`);
+    } catch (error) {
+      console.error('❌ Failed to stop Gmail Pub/Sub listener:', error);
     }
   }
 }

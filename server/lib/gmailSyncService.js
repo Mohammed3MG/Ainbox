@@ -24,6 +24,11 @@ class GmailSyncService {
       // Set up Gmail Push notifications
       const watchData = await gmailPubSub.setupGmailWatch(userId, accessToken, refreshToken);
 
+      // Start Pub/Sub listener (if not already started)
+      if (this.activeUsers.size === 0) {
+        await gmailPubSub.startPubSubListener();
+      }
+
       // Store user sync data
       this.activeUsers.set(userId, {
         accessToken,
