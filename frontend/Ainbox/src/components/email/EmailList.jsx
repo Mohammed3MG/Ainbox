@@ -227,13 +227,23 @@ export default function EmailList({
             return (
               <div
                 key={`${email.id}-${email.isRead ? 'read' : 'unread'}`}
-                style={style}
+                style={{
+                  ...style,
+                  backgroundColor: selectedEmailId === email.id
+                    ? undefined // Let selection color take precedence
+                    : email.isRead
+                      ? 'oklch(98.5% 0.002 247.839)' // Read email background
+                      : 'oklch(95.4% 0.038 75.164)' // Unread email background
+                }}
                 className={cn(
-                  "flex items-center gap-4 p-4 hover:bg-gray-50 cursor-pointer transition-colors border-b border-gray-100",
+                  "email-item flex items-center gap-4 p-4 hover:bg-gray-50 cursor-pointer transition-colors border-b border-gray-100",
                   // Apply read/unread background first, then selection highlight so selection wins
-                  email.isRead ? "bg-gray-100" : "bg-[#ffeabd]",
+                  email.isRead ? "read" : "unread",
                   selectedEmailId === email.id && "bg-blue-50 border-r-2 border-blue-500"
                 )}
+                data-message-id={email.id}
+                data-thread-id={email.threadId}
+                data-read-status={email.isRead ? 'read' : 'unread'}
                 onClick={() => onEmailSelect(email.id)}
               >
                 {/* Checkbox */}

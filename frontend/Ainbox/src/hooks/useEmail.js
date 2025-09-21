@@ -18,6 +18,7 @@ import {
   clearEmailCache
 } from '../services/emailApi'
 import socketService from '../services/socketApi'
+import { useRealTimeEmailBridge } from '../components/email/RealTimeEmailBridge'
 
 export function useEmail() {
   const [emails, setEmails] = useState([])
@@ -542,6 +543,62 @@ export function useEmail() {
       unsubscribeActionBroadcast()
     }
   }, [loadEmails])
+
+  // Real-Time Email Bridge Integration (Gmail Pub/Sub → React State)
+  useRealTimeEmailBridge(
+    // Handle immediate email status updates from Gmail Pub/Sub
+    (data) => {
+      console.log('🌉 Bridge→React: Immediate email status update:', data);
+
+      setEmails(prev => prev.map(email => {
+        const match = data.emailId && (
+          email.id === data.emailId ||
+          email.threadId === data.emailId ||
+          email.messageId === data.emailId ||
+          email.conversationId === data.emailId
+        );
+
+        if (match) {
+          console.log('✅ Bridge→React: Updating email in state:', data.emailId, 'isRead:', data.isRead);
+          return { ...email, isRead: data.isRead };
+        }
+        return email;
+      }));
+
+      // Update unread count based on status change
+      if (typeof data.isRead === 'boolean') {
+        setUnreadCount(prev => {
+          const delta = data.isRead ? -1 : 1;
+          return Math.max(0, prev + delta);
+        });
+      }
+    },
+    // Handle new emails from Gmail Pub/Sub
+    (data) => {
+      console.log('🌉 Bridge→React: New email from Pub/Sub:', data);
+      if (data.email) {
+        const formattedEmail = formatEmailForDisplay(data.email);
+        setEmails(prev => [formattedEmail, ...prev]);
+        setTotal(prev => prev + 1);
+        if (!formattedEmail.isRead) {
+          setUnreadCount(prev => prev + 1);
+        }
+      }
+    },
+    // Handle email deletions from Gmail Pub/Sub
+    (data) => {
+      console.log('🌉 Bridge→React: Email deletion from Pub/Sub:', data);
+      setEmails(prev => prev.filter(email => {
+        return !(
+          email.id === data.emailId ||
+          email.threadId === data.emailId ||
+          email.messageId === data.emailId ||
+          email.conversationId === data.emailId
+        );
+      }));
+      setTotal(prev => Math.max(0, prev - 1));
+    }
+  )
 
   // Keyboard shortcuts
   useEffect(() => {

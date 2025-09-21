@@ -19,6 +19,7 @@ const cookieParser = require('cookie-parser');
 const apiV1 = require('./routes/api_v1');
 const aiRoutes = require('./routes/ai');
 const syncRoutes = require('./routes/sync');
+const gmailWebhook = require('./routes/webhooks/gmail');
 const socketIOService = require('./lib/socketio');
 
 // Import new scaling components (optional - fallback if not available)
@@ -80,6 +81,7 @@ app.use(otherRouter);
 app.use('/api/v1', apiV1);
 app.use(aiRoutes);
 app.use('/sync', syncRoutes);
+app.use('/webhooks', gmailWebhook);
 // app.use('/api/emails', emailStatusRoutes);
 
 

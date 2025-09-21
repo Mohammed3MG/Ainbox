@@ -1,7 +1,7 @@
 // Gmail synchronization API endpoints
 const express = require('express');
 const { requireAuth } = require('../middleware/auth');
-const gmailSync = require('../lib/gmailSync');
+const gmailSyncService = require('../lib/gmailSyncService');
 
 const router = express.Router();
 
@@ -9,15 +9,24 @@ const router = express.Router();
 router.post('/gmail/start', requireAuth, async (req, res) => {
   try {
     const userId = String(req.auth?.sub);
+    const userEmail = req.auth?.email || req.body?.email;
 
-    // Start sync with user's cookies for OAuth
-    await gmailSync.startSyncForUser(userId, req.cookies);
+    // Get OAuth tokens from session or request
+    const { accessToken, refreshToken } = await getOAuthTokens(req);
 
-    const status = gmailSync.getSyncStatus(userId);
+    if (!accessToken || !refreshToken) {
+      return res.status(401).json({
+        error: 'OAuth tokens not found',
+        message: 'Please authenticate with Google first'
+      });
+    }
+
+    // Start Pub/Sub enhanced sync
+    const result = await gmailSyncService.startSync(userId, accessToken, refreshToken, userEmail);
 
     res.json({
-      message: 'Gmail sync started',
-      status,
+      message: 'Gmail Pub/Sub sync started successfully',
+      ...result,
       timestamp: Date.now()
     });
   } catch (error) {
@@ -34,10 +43,11 @@ router.post('/gmail/stop', requireAuth, async (req, res) => {
   try {
     const userId = String(req.auth?.sub);
 
-    gmailSync.stopSyncForUser(userId);
+    const result = await gmailSyncService.stopSync(userId);
 
     res.json({
-      message: 'Gmail sync stopped',
+      message: 'Gmail Pub/Sub sync stopped successfully',
+      ...result,
       timestamp: Date.now()
     });
   } catch (error) {
@@ -53,11 +63,12 @@ router.post('/gmail/stop', requireAuth, async (req, res) => {
 router.get('/gmail/status', requireAuth, async (req, res) => {
   try {
     const userId = String(req.auth?.sub);
-    const status = gmailSync.getSyncStatus(userId);
+    const status = gmailSyncService.getSyncStatus(userId);
 
     res.json({
       userId,
       status,
+      pubsubEnabled: true,
       timestamp: Date.now()
     });
   } catch (error) {
@@ -74,10 +85,11 @@ router.post('/gmail/force', requireAuth, async (req, res) => {
   try {
     const userId = String(req.auth?.sub);
 
-    await gmailSync.forceSyncForUser(userId, req.cookies);
+    const result = await gmailSyncService.forceSync(userId);
 
     res.json({
       message: 'Gmail force sync completed',
+      ...result,
       timestamp: Date.now()
     });
   } catch (error) {
@@ -95,11 +107,14 @@ router.get('/admin/all-status', requireAuth, async (req, res) => {
     // Basic auth check - in production you'd want proper admin role checking
     const userId = String(req.auth?.sub);
 
-    const allStatuses = gmailSync.getAllSyncStatuses();
+    const stats = gmailSyncService.getStats();
+    const activeUsers = gmailSyncService.getActiveUsers();
 
     res.json({
-      totalActiveUsers: Object.keys(allStatuses).length,
-      statuses: allStatuses,
+      totalActiveUsers: activeUsers.length,
+      activeUsers,
+      stats,
+      pubsubEnabled: true,
       timestamp: Date.now(),
       requestedBy: userId
     });
@@ -111,5 +126,61 @@ router.get('/admin/all-status', requireAuth, async (req, res) => {
     });
   }
 });
+
+/**
+ * Helper function to extract OAuth tokens from request
+ * This should be customized based on how you store OAuth tokens
+ */
+async function getOAuthTokens(req) {
+  try {
+    // Method 1: From session/cookies (most common)
+    if (req.session && req.session.accessToken) {
+      return {
+        accessToken: req.session.accessToken,
+        refreshToken: req.session.refreshToken
+      };
+    }
+
+    // Method 2: From request headers
+    if (req.headers.authorization) {
+      const authHeader = req.headers.authorization;
+      if (authHeader.startsWith('Bearer ')) {
+        return {
+          accessToken: authHeader.substring(7),
+          refreshToken: req.headers['x-refresh-token']
+        };
+      }
+    }
+
+    // Method 3: From request body
+    if (req.body && req.body.accessToken) {
+      return {
+        accessToken: req.body.accessToken,
+        refreshToken: req.body.refreshToken
+      };
+    }
+
+    // Method 4: From cookies (if using cookie-based auth)
+    if (req.cookies && req.cookies.access_token) {
+      return {
+        accessToken: req.cookies.access_token,
+        refreshToken: req.cookies.refresh_token
+      };
+    }
+
+    // TODO: Add your specific OAuth token retrieval logic here
+    // For example, you might need to:
+    // 1. Query your database for user's tokens
+    // 2. Decrypt stored tokens
+    // 3. Validate token expiry and refresh if needed
+
+    console.warn('⚠️  OAuth tokens not found in request');
+    return { accessToken: null, refreshToken: null };
+
+  } catch (error) {
+    console.error('❌ Error extracting OAuth tokens:', error);
+    return { accessToken: null, refreshToken: null };
+  }
+}
 
 module.exports = router;

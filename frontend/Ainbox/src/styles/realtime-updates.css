@@ -1,0 +1,313 @@
+/* Real-time updates CSS for Gmail Pub/Sub notifications */
+
+/* Unread count badge styles */
+.unread-count {
+  background-color: #ff4444;
+  color: white;
+  border-radius: 50%;
+  padding: 2px 6px;
+  font-size: 12px;
+  font-weight: bold;
+  min-width: 18px;
+  text-align: center;
+  display: inline-block;
+  transition: all 0.3s ease;
+}
+
+/* Real-time update animation for badges */
+.unread-count.updated-realtime {
+  animation: pulse-glow 2s ease-in-out;
+  transform: scale(1.1);
+}
+
+@keyframes pulse-glow {
+  0% {
+    box-shadow: 0 0 5px #ff4444;
+    transform: scale(1.1);
+  }
+  50% {
+    box-shadow: 0 0 20px #ff6666, 0 0 30px #ff8888;
+    transform: scale(1.15);
+  }
+  100% {
+    box-shadow: 0 0 5px #ff4444;
+    transform: scale(1.1);
+  }
+}
+
+/* Email list item styles */
+.email-item {
+  padding: 12px;
+  border-bottom: 1px solid #eee;
+  transition: all 0.3s ease;
+  position: relative;
+}
+
+.email-item.unread {
+  background-color: oklch(95.4% 0.038 75.164); /* Light warm yellow for unread */
+  border-left: 4px solid #007bff;
+  font-weight: 600;
+}
+
+.email-item.read {
+  background-color: oklch(97.1% 0.013 17.38); /* Light warm gray for read */
+  border-left: 4px solid transparent;
+  font-weight: normal;
+  opacity: 0.8;
+}
+
+/* Real-time status update animation */
+.email-item.status-updated {
+  animation: status-change-highlight 1.5s ease-in-out;
+}
+
+/* IMMEDIATE status update animation (highest priority) */
+.email-item.status-updated-immediate {
+  animation: immediate-status-change 0.8s ease-in-out;
+  transition: all 0.3s ease !important;
+}
+
+@keyframes status-change-highlight {
+  0% {
+    background-color: #fff3cd;
+    transform: translateX(0);
+  }
+  25% {
+    background-color: #ffeaa7;
+    transform: translateX(2px);
+  }
+  75% {
+    background-color: #ffeaa7;
+    transform: translateX(-2px);
+  }
+  100% {
+    transform: translateX(0);
+  }
+}
+
+/* IMMEDIATE status change animation - stronger visual feedback */
+@keyframes immediate-status-change {
+  0% {
+    transform: scale(1) translateY(0);
+    box-shadow: 0 0 0 rgba(0, 123, 255, 0);
+  }
+  25% {
+    transform: scale(1.03) translateY(-2px);
+    box-shadow: 0 4px 12px rgba(0, 123, 255, 0.4);
+  }
+  50% {
+    transform: scale(1.02) translateY(-1px);
+    box-shadow: 0 6px 16px rgba(0, 123, 255, 0.3);
+  }
+  75% {
+    transform: scale(1.01) translateY(-1px);
+    box-shadow: 0 4px 12px rgba(0, 123, 255, 0.2);
+  }
+  100% {
+    transform: scale(1) translateY(0);
+    box-shadow: 0 0 0 rgba(0, 123, 255, 0);
+  }
+}
+
+/* Read status indicators */
+.read-status {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  margin-right: 8px;
+  transition: all 0.3s ease;
+}
+
+.read-status.unread {
+  background-color: #007bff;
+  color: #007bff;
+}
+
+.read-status.read {
+  background-color: #6c757d;
+  color: #6c757d;
+}
+
+/* Connection status indicator */
+.connection-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  padding: 4px 8px;
+  border-radius: 12px;
+  background-color: #f8f9fa;
+  border: 1px solid #dee2e6;
+  transition: all 0.3s ease;
+}
+
+.connection-status.connected {
+  background-color: #d4edda;
+  border-color: #c3e6cb;
+  color: #155724;
+}
+
+.connection-status.disconnected {
+  background-color: #f8d7da;
+  border-color: #f5c6cb;
+  color: #721c24;
+}
+
+.connection-status::before {
+  content: '';
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background-color: currentColor;
+}
+
+/* Sync status indicators */
+.sync-status {
+  padding: 6px 12px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  display: inline-block;
+  transition: all 0.3s ease;
+}
+
+.sync-status.active {
+  background-color: #d1ecf1;
+  color: #0c5460;
+  border: 1px solid #bee5eb;
+}
+
+.sync-status.inactive {
+  background-color: #f8d7da;
+  color: #721c24;
+  border: 1px solid #f5c6cb;
+}
+
+.sync-status.syncing {
+  background-color: #fff3cd;
+  color: #856404;
+  border: 1px solid #ffeaa7;
+  animation: sync-pulse 2s infinite;
+}
+
+@keyframes sync-pulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.7;
+  }
+}
+
+/* Toast notifications for real-time updates */
+.realtime-toast {
+  position: fixed;
+  top: 20px;
+  right: 20px;
+  background-color: #fff;
+  border: 1px solid #dee2e6;
+  border-radius: 8px;
+  padding: 12px 16px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+  z-index: 1050;
+  max-width: 300px;
+  animation: slide-in-right 0.3s ease-out;
+}
+
+.realtime-toast.success {
+  border-left: 4px solid #28a745;
+}
+
+.realtime-toast.info {
+  border-left: 4px solid #17a2b8;
+}
+
+.realtime-toast.warning {
+  border-left: 4px solid #ffc107;
+}
+
+.realtime-toast.error {
+  border-left: 4px solid #dc3545;
+}
+
+@keyframes slide-in-right {
+  from {
+    transform: translateX(100%);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+/* Responsive design */
+@media (max-width: 768px) {
+  .realtime-toast {
+    top: 10px;
+    right: 10px;
+    left: 10px;
+    max-width: none;
+  }
+
+  .unread-count {
+    font-size: 11px;
+    padding: 1px 5px;
+    min-width: 16px;
+  }
+}
+
+/* Dark mode support */
+@media (prefers-color-scheme: dark) {
+  .email-item.unread {
+    background-color: #2d3748;
+    border-left-color: #4299e1;
+  }
+
+  .email-item.read {
+    background-color: #1a202c;
+  }
+
+  .connection-status {
+    background-color: #2d3748;
+    border-color: #4a5568;
+    color: #e2e8f0;
+  }
+
+  .connection-status.connected {
+    background-color: #2f855a;
+    border-color: #38a169;
+    color: #f0fff4;
+  }
+
+  .connection-status.disconnected {
+    background-color: #e53e3e;
+    border-color: #f56565;
+    color: #fed7d7;
+  }
+
+  .realtime-toast {
+    background-color: #2d3748;
+    border-color: #4a5568;
+    color: #e2e8f0;
+  }
+}
+
+/* Utility classes for inbox count elements */
+.inbox-counter {
+  position: relative;
+  display: inline-block;
+}
+
+.inbox-counter .unread-count {
+  position: absolute;
+  top: -8px;
+  right: -8px;
+}
+
+/* Page title update indicator */
+.title-unread-indicator {
+  color: #ff4444;
+  font-weight: bold;
+}

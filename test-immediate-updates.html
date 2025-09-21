@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Test Immediate Gmail Updates</title>
+    <link rel="stylesheet" href="frontend/Ainbox/src/styles/realtime-updates.css">
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .test-container {
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            padding: 20px;
+            margin: 20px 0;
+        }
+        .email-item {
+            padding: 15px;
+            margin: 10px 0;
+            border: 1px solid #eee;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+        .status-indicator {
+            background: #28a745;
+            color: white;
+            padding: 5px 10px;
+            border-radius: 4px;
+            font-size: 12px;
+            margin: 10px 0;
+        }
+        button {
+            padding: 10px 15px;
+            margin: 5px;
+            border: none;
+            border-radius: 4px;
+            background: #007bff;
+            color: white;
+            cursor: pointer;
+        }
+        button:hover {
+            background: #0056b3;
+        }
+    </style>
+</head>
+<body>
+    <h1>🧪 Test Immediate Gmail Updates</h1>
+
+    <div class="status-indicator" id="connectionStatus">
+        Connection Status: Disconnected
+    </div>
+
+    <div class="test-container">
+        <h3>📧 Test Email Items</h3>
+        <p>These simulate your email list items. Click buttons below to test immediate updates.</p>
+
+        <!-- Test email items with proper data attributes -->
+        <div class="email-item unread" data-message-id="test-message-1" data-read-status="unread">
+            <span class="read-status unread" data-read-status>●</span>
+            <strong>Test Email 1</strong> - Sample unread email
+        </div>
+
+        <div class="email-item read" data-message-id="test-message-2" data-read-status="read">
+            <span class="read-status read" data-read-status>✓</span>
+            <strong>Test Email 2</strong> - Sample read email
+        </div>
+
+        <div class="email-item unread" data-message-id="test-message-3" data-read-status="unread">
+            <span class="read-status unread" data-read-status>●</span>
+            <strong>Test Email 3</strong> - Another unread email
+        </div>
+    </div>
+
+    <div class="test-container">
+        <h3>🎮 Test Controls</h3>
+        <button onclick="testMarkAsRead('test-message-1')">Mark Email 1 as Read</button>
+        <button onclick="testMarkAsUnread('test-message-1')">Mark Email 1 as Unread</button>
+        <button onclick="testMarkAsRead('test-message-2')">Mark Email 2 as Read</button>
+        <button onclick="testMarkAsUnread('test-message-2')">Mark Email 2 as Unread</button>
+        <button onclick="testMarkAsRead('test-message-3')">Mark Email 3 as Read</button>
+        <button onclick="testMarkAsUnread('test-message-3')">Mark Email 3 as Unread</button>
+        <br><br>
+        <button onclick="testUpdateCounts(5, 10)">Update Counts (5 unread, 10 total)</button>
+        <button onclick="testUpdateCounts(0, 10)">Update Counts (0 unread, 10 total)</button>
+        <button onclick="testUpdateCounts(3, 8)">Update Counts (3 unread, 8 total)</button>
+    </div>
+
+    <div class="test-container">
+        <h3>📊 Inbox Count Display</h3>
+        <div class="inbox-counter">
+            <span>Inbox</span>
+            <span class="unread-count" data-unread-count>5</span>
+        </div>
+        <div>Total: <span class="total-count" data-total-count>10</span></div>
+    </div>
+
+    <script type="module">
+        // Import your sync service
+        // import gmailSyncService from './frontend/Ainbox/src/services/syncApi.js';
+
+        // Simulate the sync service for testing
+        const mockSyncService = {
+            handleImmediateEmailStatusUpdate(data) {
+                console.log(`⚡ IMMEDIATE UI update for email ${data.messageId}:`, data.changeType);
+
+                const emailElements = document.querySelectorAll(`[data-message-id="${data.messageId}"]`);
+
+                if (emailElements.length === 0) {
+                    console.warn(`⚠️ No email elements found for message ID: ${data.messageId}`);
+                    return;
+                }
+
+                emailElements.forEach(element => {
+                    if (data.isRead) {
+                        element.classList.remove('unread');
+                        element.classList.add('read');
+                        element.style.backgroundColor = '#ffffff';
+                        element.style.fontWeight = 'normal';
+                        element.style.opacity = '0.8';
+                        element.style.borderLeft = '4px solid transparent';
+                    } else {
+                        element.classList.remove('read');
+                        element.classList.add('unread');
+                        element.style.backgroundColor = '#f8f9fa';
+                        element.style.fontWeight = '600';
+                        element.style.opacity = '1';
+                        element.style.borderLeft = '4px solid #007bff';
+                    }
+
+                    element.classList.add('status-updated-immediate');
+                    element.style.transform = 'scale(1.02)';
+                    element.style.boxShadow = data.isRead
+                        ? '0 2px 8px rgba(108, 117, 125, 0.3)'
+                        : '0 2px 8px rgba(0, 123, 255, 0.3)';
+
+                    setTimeout(() => {
+                        element.classList.remove('status-updated-immediate');
+                        element.style.transform = '';
+                        element.style.boxShadow = '';
+                    }, 800);
+
+                    const readIndicators = element.querySelectorAll('.read-status, [data-read-status]');
+                    readIndicators.forEach(indicator => {
+                        indicator.textContent = data.isRead ? '✓' : '●';
+                        indicator.className = `read-status ${data.isRead ? 'read' : 'unread'}`;
+                        indicator.style.color = data.isRead ? '#6c757d' : '#007bff';
+                        indicator.style.fontWeight = data.isRead ? 'normal' : 'bold';
+                    });
+
+                    element.setAttribute('data-read-status', data.isRead ? 'read' : 'unread');
+                });
+
+                console.log(`⚡ IMMEDIATE UI update completed - Message: ${data.messageId}, Read: ${data.isRead}`);
+            },
+
+            updateInboxCountUI(unread, total, source = 'test') {
+                const unreadBadges = document.querySelectorAll('.unread-count, [data-unread-count]');
+                unreadBadges.forEach(badge => {
+                    badge.textContent = unread;
+                    badge.style.display = unread > 0 ? 'block' : 'none';
+                    badge.classList.add('updated-realtime');
+                    setTimeout(() => badge.classList.remove('updated-realtime'), 2000);
+                });
+
+                const totalCountElements = document.querySelectorAll('.total-count, [data-total-count]');
+                totalCountElements.forEach(element => {
+                    element.textContent = total;
+                });
+
+                console.log(`📊 UI updated - Unread: ${unread}, Total: ${total}, Source: ${source}`);
+            }
+        };
+
+        // Test functions
+        window.testMarkAsRead = function(messageId) {
+            mockSyncService.handleImmediateEmailStatusUpdate({
+                messageId: messageId,
+                isRead: true,
+                changeType: 'marked_read',
+                timestamp: new Date().toISOString()
+            });
+        };
+
+        window.testMarkAsUnread = function(messageId) {
+            mockSyncService.handleImmediateEmailStatusUpdate({
+                messageId: messageId,
+                isRead: false,
+                changeType: 'marked_unread',
+                timestamp: new Date().toISOString()
+            });
+        };
+
+        window.testUpdateCounts = function(unread, total) {
+            mockSyncService.updateInboxCountUI(unread, total, 'test');
+        };
+
+        // Simulate connection status
+        document.getElementById('connectionStatus').textContent = 'Connection Status: Connected (Test Mode)';
+        document.getElementById('connectionStatus').style.background = '#28a745';
+
+        console.log('🧪 Test page loaded. Use the buttons to test immediate email updates!');
+        console.log('📝 Check browser console for update logs');
+    </script>
+</body>
+</html>

@@ -6,6 +6,7 @@ import EmailHeader from '../components/email/EmailHeader'
 import EmailList from '../components/email/EmailList'
 import EmailThread from '../components/email/EmailThread'
 import ComposeEmail from '../components/email/ComposeEmail'
+import RealTimeEmailBridge from '../components/email/RealTimeEmailBridge'
 
 export default function Dashboard() {
   const { user, terms } = useSession()
@@ -123,6 +124,9 @@ export default function Dashboard() {
 
   return (
     <div className="h-screen w-full bg-gray-50 flex flex-col">
+      {/* Real-Time Email Bridge - connects Gmail Pub/Sub with React state */}
+      <RealTimeEmailBridge />
+
       {/* Header */}
       <EmailHeader
         currentFolder={activeFolder}
