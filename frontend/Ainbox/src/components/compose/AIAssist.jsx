@@ -42,14 +42,49 @@ const EMAIL_SUGGESTIONS = [
 export default function AIAssist({ onInsert, onClose }) {
   const [prompt, setPrompt] = useState('');
   const [generatedText, setGeneratedText] = useState('');
+  const [displayedText, setDisplayedText] = useState('');
   const [isGenerating, setIsGenerating] = useState(false);
+  const [isTyping, setIsTyping] = useState(false);
   const [error, setError] = useState('');
   const promptRef = useRef(null);
+  const typewriterRef = useRef(null);
 
   useEffect(() => {
     // Focus the prompt input when opened
     promptRef.current?.focus();
   }, []);
+
+  // Typewriter effect when generatedText changes
+  useEffect(() => {
+    if (!generatedText || isGenerating) {
+      setDisplayedText('');
+      return;
+    }
+
+    setIsTyping(true);
+    setDisplayedText('');
+
+    let currentIndex = 0;
+    const typeSpeed = 5; // milliseconds per character
+
+    const typeCharacter = () => {
+      if (currentIndex < generatedText.length) {
+        setDisplayedText(prev => prev + generatedText[currentIndex]);
+        currentIndex++;
+        typewriterRef.current = setTimeout(typeCharacter, typeSpeed);
+      } else {
+        setIsTyping(false);
+      }
+    };
+
+    typewriterRef.current = setTimeout(typeCharacter, 100); // Initial delay
+
+    return () => {
+      if (typewriterRef.current) {
+        clearTimeout(typewriterRef.current);
+      }
+    };
+  }, [generatedText, isGenerating]);
 
   const handleGenerate = async () => {
     if (!prompt.trim()) {
@@ -102,6 +137,14 @@ export default function AIAssist({ onInsert, onClose }) {
       onInsert(generatedText);
       onClose(); // Close AI panel after inserting
     }
+  };
+
+  const handleSkipTyping = () => {
+    if (typewriterRef.current) {
+      clearTimeout(typewriterRef.current);
+    }
+    setDisplayedText(generatedText);
+    setIsTyping(false);
   };
 
   const handleSuggestionClick = (suggestion) => {
@@ -192,20 +235,24 @@ export default function AIAssist({ onInsert, onClose }) {
                     <div className="flex items-center justify-between mb-2">
                       <span className="text-sm font-medium text-blue-900">Generatd with Fyl</span>
                       {isGenerating && (
-                        <div className="flex items-center text-blue-700">
+                        <div className="flex items-center tx-sm text-blue-700">
                           {/* <Sparkles className="w-4 h-4 animate-spin text-purple-600 drop-shadow-sm" /> */}
                           {/* <Brain className="w-4 h-4 animate-pulse text-blue-600" /> */}
-                          <Sparkles className="w-4 h-4 animate-pulse drop-shadow-lg text-blue-700" />
+                          <Sparkles className="w-4 h-4 animate-spin drop-shadow-lg text-blue-700" />
                           Writing...
                         </div>
                       )}
                     </div>
-                    <div className="text-sm text-gray-900 whitespace-pre-wrap leading-relaxed">
-                      {generatedText}
-                      {isGenerating && <span className="animate-pulse">|</span>}
+                    <div
+                      className="text-sm text-gray-900 whitespace-pre-wrap leading-relaxed cursor-pointer"
+                      onClick={isTyping ? handleSkipTyping : undefined}
+                      title={isTyping ? "Click to skip typing animation" : undefined}
+                    >
+                      {isGenerating ? '' : displayedText}
+                      {(isGenerating || isTyping) && <span className="animate-pulse">|</span>}
                     </div>
 
-                    {generatedText && !isGenerating && (
+                    {generatedText && !isGenerating && !isTyping && (
                       <div className="flex items-center gap-2 mt-3 pt-3 border-t border-blue-200">
                         <Button
                           onClick={handleInsert}

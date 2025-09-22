@@ -17,13 +17,15 @@ export default defineConfig({
   server: {
     proxy: {
       // Proxy API requests to backend server
-      '/emails': 'http://localhost:3000',
-      '/gmail': 'http://localhost:3000',
-      '/api': 'http://localhost:3000',
-      '/auth': 'http://localhost:3000',
-      '/sync': 'http://localhost:3000',
-      '/webhooks': 'http://localhost:3000',
-      '/ai': 'http://localhost:3000'
+      '/emails': 'http://localhost:3002',
+      '/gmail': 'http://localhost:3002',
+      '/api': 'http://localhost:3002',
+      '/auth': 'http://localhost:3002',
+      '/sync': 'http://localhost:3002',
+      '/webhooks': 'http://localhost:3002',
+      '/ai': 'http://localhost:3002',
+      '/compose': 'http://localhost:3002',
+      '/reply': 'http://localhost:3002'
     }
   }
 });

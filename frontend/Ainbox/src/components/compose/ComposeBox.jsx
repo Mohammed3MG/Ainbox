@@ -30,6 +30,7 @@ import MiniColorPicker from './MiniColorPicker';
 import { useDraftAutoSave } from '../../hooks/useDraftAutoSave';
 import { useAccessibility, useFocusManagement } from './AccessibilityProvider';
 import { useKeyboardShortcuts } from '../../hooks/useKeyboardShortcuts';
+import { useSession } from '../../hooks/useSession';
 
 const FONT_SIZES = [12, 14, 16, 18, 24];
 const FONT_FAMILIES = [
@@ -78,6 +79,7 @@ export default function ComposeBox({
   // Accessibility hooks
   const { announce, highContrast, reducedMotion } = useAccessibility();
   const { saveFocus, restoreFocus, trapFocus } = useFocusManagement();
+  const { user } = useSession();
 
   // Auto-save hook
   const { saveStatus, lastSaved } = useDraftAutoSave({
@@ -136,8 +138,43 @@ export default function ComposeBox({
     announce('Sending email...');
 
     try {
-      // TODO: Implement actual send logic
-      await new Promise(resolve => setTimeout(resolve, 2000)); // Mock delay
+      // Prepare email data for backend
+      const emailData = {
+        provider: 'gmail', // Default to Gmail
+        from: user?.email || 'user@example.com', // Use user's email from session
+        to: recipients.to.map(r => r.email),
+        cc: recipients.cc.map(r => r.email),
+        bcc: recipients.bcc.map(r => r.email),
+        subject,
+        text: editorContent.replace(/<[^>]*>/g, ''), // Strip HTML for text version
+        html: editorContent,
+        attachments: attachments.map(att => ({
+          filename: att.name,
+          contentType: att.type,
+          data: att.data // Assuming base64 encoded data
+        })),
+        ...(replyTo && {
+          inReplyTo: replyTo.messageId,
+          references: replyTo.references
+        })
+      };
+
+      // Send email via backend API
+      const response = await fetch('/compose', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(emailData),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || `HTTP error! status: ${response.status}`);
+      }
+
+      const result = await response.json();
+      console.log('Email sent successfully:', result);
 
       // Clear the composer
       setRecipients({ to: [], cc: [], bcc: [] });
@@ -152,7 +189,7 @@ export default function ComposeBox({
       onClose?.();
     } catch (error) {
       console.error('Failed to send email:', error);
-      announce('Failed to send email. Please try again.', 'assertive');
+      announce(`Failed to send email: ${error.message}`, 'assertive');
     } finally {
       setIsSending(false);
     }

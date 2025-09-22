@@ -105,7 +105,7 @@ export default function RecipientInput({
   const handleInputKeyDown = (e) => {
     const value = inputValue.trim();
 
-    if (e.key === 'Enter' || e.key === ',') {
+    if (e.key === 'Enter' || e.key === ',' || e.key === ' ') {
       e.preventDefault();
       if (value && addRecipient(value)) {
         setInputValue('');
@@ -197,7 +197,23 @@ export default function RecipientInput({
               ref={inputRef}
               type="text"
               value={inputValue}
-              onChange={(e) => setInputValue(e.target.value)}
+              onChange={(e) => {
+                const newValue = e.target.value;
+                setInputValue(newValue);
+
+                // Auto-convert to badge when valid email is typed
+                const trimmed = newValue.trim();
+                if (trimmed && validateEmail(trimmed) && !recipients.some(r => r.email.toLowerCase() === trimmed.toLowerCase())) {
+                  // Small delay to allow user to continue typing
+                  setTimeout(() => {
+                    if (inputValue.trim() === trimmed && validateEmail(trimmed)) {
+                      if (addRecipient(trimmed)) {
+                        setInputValue('');
+                      }
+                    }
+                  }, 1000);
+                }
+              }}
               onKeyDown={handleInputKeyDown}
               onFocus={() => setIsInputFocused(true)}
               onBlur={handleInputBlur}

@@ -22,7 +22,8 @@ import {
   DropdownMenuTrigger,
 } from '../ui/dropdown-menu'
 import { generateAvatarProps, hasValidAvatar } from '../../utils/avatarUtils'
-import { getInboxDisplayName, getInboxAvatarProps, getCurrentUserEmail } from '../../utils/emailDisplay'
+import { getInboxDisplayName, getInboxAvatarProps } from '../../utils/emailDisplay'
+import { useSession } from '../../hooks/useSession'
 
 // No more mock data - using real API data
 
@@ -45,14 +46,8 @@ export default function EmailList({
   onLoadPrev
 }) {
   const [selectAll, setSelectAll] = useState(false)
-  const [currentUserEmail, setCurrentUserEmail] = useState(null)
-
-  // Get current user email for display logic
-  useEffect(() => {
-    getCurrentUserEmail().then(email => {
-      setCurrentUserEmail(email)
-    })
-  }, [])
+  const { user } = useSession()
+  const currentUserEmail = user?.email?.toLowerCase() || null
 
   const filteredEmails = emails
   const pageSize = 50
