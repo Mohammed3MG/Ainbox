@@ -6,7 +6,11 @@ const cache = require('../lib/cache');
 const emailCache = require('../lib/emailCache');
 const socketIOService = require('../lib/socketio');
 const gmailSync = require('../lib/gmailSync');
+const gmailSyncService = require('../lib/gmailSyncService');
+const unifiedBroadcast = require('../lib/unifiedBroadcast');
 const readState = require('../lib/readState');
+const gmailEventualConsistencyManager = require('../lib/gmailEventualConsistencyManager');
+const gmailApiHelpers = require('../lib/gmail');
 
 const router = express.Router();
 
@@ -137,7 +141,8 @@ router.get('/emails', requireAuth, async (req, res) => {
     const response = await gmail.users.messages.list({
       userId: 'me',
       maxResults: 2,
-      labelIds: ['INBOX', 'CATEGORY_PERSONAL']
+      labelIds: ['INBOX'],
+      q: 'category:primary'
     });
 
     const messages = [];
@@ -193,30 +198,22 @@ router.get('/emails', requireAuth, async (req, res) => {
   }
 });
 
-  // Inbox stats: Primary category (category:primary) within INBOX
+  // Inbox stats: Primary category (category:primary) within INBOX - REAL-TIME with no caching
   router.get('/gmail/inbox-stats', requireAuth, async (req, res) => {
       try {
         const userId = String(req.auth?.sub);
-        const key = `inbox:stats:gmail:${userId}`;
-        const value = await cache.wrap(key, 45_000, async () => {
-          const oauth2Client = await getGoogleOAuthClientFromCookies(req);
-          return computePrimaryInboxCounts(oauth2Client);
-        });
-        // Persist latest stats to Redis-backed user stats cache for instant updates
-        try { await emailCache.setUserStats(userId, 'gmail', value); } catch (_) {}
+        console.log(`📊 [INBOX-STATS] 🚀 Fetching REAL-TIME stats from Gmail API for user ${userId}`);
 
-      // Auto-start Gmail sync for this user when they access Gmail stats
-      const syncStatus = gmailSync.getSyncStatus(userId);
-      if (!syncStatus.active) {
-        console.log(`🚀 Auto-starting Gmail sync for user ${userId}`);
-        gmailSync.startSyncForUser(userId, req.cookies).catch(err => {
-          console.error('Auto-start Gmail sync failed:', err.message);
-        });
-      }
+        // REAL-TIME: Always fetch fresh from Gmail API, no caching
+        const oauth2Client = await getGoogleOAuthClientFromCookies(req);
+        const freshStats = await computePrimaryInboxCounts(oauth2Client);
 
-      return res.json(value);
+        console.log(`📊 [INBOX-STATS] ✅ Fresh Gmail stats: ${freshStats.unread} unread / ${freshStats.total} total`);
+
+        // No caching, no Redis storage - just return fresh data immediately
+        return res.json(freshStats);
     } catch (err) {
-      console.error(err);
+      console.error('❌ [INBOX-STATS] Real-time Gmail fetch failed:', err);
       return res.status(401).json({ error: 'Unable to access Gmail. Reconnect Google.' });
     }
   });
@@ -233,8 +230,44 @@ router.post('/gmail/mark-read', requireAuth, async (req, res) => {
     const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
     let ok = 0;
     for (let i = 0; i < ids.length; i++) {
-      const threadId = ids[i];
+      let threadId = ids[i];
       const originalId = originalIds[i] || threadId;
+
+      // CRITICAL FIX: Convert message ID to thread ID if needed
+      // The frontend may send message IDs, but Gmail API requires thread IDs
+      try {
+        // First check if this is already a valid thread ID by trying to get the thread
+        await gmail.users.threads.get({ userId: 'me', id: threadId, fields: 'id' });
+        console.log(`✅ Valid thread ID confirmed: ${threadId}`);
+      } catch (threadError) {
+        if (threadError.status === 404) {
+          console.log(`🔄 ID ${threadId} is not a valid thread ID, attempting to convert from message ID...`);
+
+          try {
+            // Try to get the message and extract its thread ID
+            const messageResp = await gmail.users.messages.get({
+              userId: 'me',
+              id: threadId,
+              fields: 'threadId'
+            });
+
+            if (messageResp.data.threadId) {
+              const convertedThreadId = messageResp.data.threadId;
+              console.log(`✅ Converted message ID ${threadId} to thread ID ${convertedThreadId}`);
+              threadId = convertedThreadId;
+            } else {
+              throw new Error('No threadId found in message response');
+            }
+          } catch (messageError) {
+            console.error(`❌ Failed to convert ${threadId} to thread ID:`, messageError.message);
+            console.log(`⚠️ Skipping invalid ID ${threadId}`);
+            continue; // Skip this invalid ID
+          }
+        } else {
+          console.error(`❌ Unexpected error checking thread ID ${threadId}:`, threadError.message);
+          continue; // Skip this ID
+        }
+      }
 
       try {
         const uid = String(req.auth?.sub);
@@ -242,9 +275,9 @@ router.post('/gmail/mark-read', requireAuth, async (req, res) => {
         await readState.removeUnread(uid, 'gmail', threadId);
         // Notify UI instantly for the row; counts broadcast later using Primary-only stats
         try {
-          // Use original message ID for Socket.IO so frontend can match properly
-          socketIOService.emailUpdated(uid, { id: originalId, isRead: true, source: 'user_action' });
-          console.log(`📧 Socket.IO event sent for message ID ${originalId} (thread ${threadId})`);
+          // Use original message ID for unified broadcast so frontend can match properly
+          unifiedBroadcast.emailUpdated(uid, { id: originalId, isRead: true, source: 'user_action' });
+          console.log(`📧 Unified broadcast event sent for message ID ${originalId} (thread ${threadId})`);
         } catch (_) {}
         ok += 1;
         // background sync to provider
@@ -256,18 +289,16 @@ router.post('/gmail/mark-read', requireAuth, async (req, res) => {
             await readState.clearOverrideOnSuccess(uid, 'gmail', threadId, true);
           } catch (err) {
             if (err.status === 404 || err.code === 404) {
-              console.warn(`⚠️ Thread ${threadId} not found in Gmail (404) - thread may have been deleted. Clearing override.`);
-              // Thread doesn't exist anymore, clear the override and treat as success
+              console.warn(`⚠️ Thread ${threadId} not found in Gmail (404) - this can happen after read state changes. Treating as successful read update.`);
+              // Thread may not be accessible anymore after read state change, but this is often normal Gmail behavior
+              // Clear the override and treat as success since the frontend already shows the email as read
               await readState.clearOverrideOnSuccess(uid, 'gmail', threadId, true);
               // Invalidate any cached data for this thread
               try {
                 await emailCache.invalidateThread(uid, 'gmail', threadId);
               } catch (_) {}
-              // Notify frontend to remove this stale email from the list
-              try {
-                console.log(`📧 Notifying frontend to remove stale email: ${originalId} (thread ${threadId})`);
-                socketIOService.emailDeleted(uid, { id: originalId, threadId: threadId, reason: 'thread_not_found', source: 'stale_data' });
-              } catch (_) {}
+              // Don't notify frontend to delete the email - it should remain in the list as read
+              console.log(`✅ Read state successfully updated for ${originalId} (Gmail API returned 404, but email remains in list as read)`);
             } else {
               console.error(`❌ Failed to sync read state for ${threadId}:`, {
                 error: err.message,
@@ -282,6 +313,18 @@ router.post('/gmail/mark-read', requireAuth, async (req, res) => {
         });
       } catch (_) {}
     }
+
+    // Gmail Eventual Consistency: Handle user action with debounced broadcasting
+    try {
+      const userId = String(req.auth?.sub);
+      console.log(`📊 [EventualConsistency] Handling mark-read action for ${ids.length} emails`);
+
+      // This handles: action accumulation, debounced broadcasting, and race condition prevention
+      await gmailEventualConsistencyManager.handleUserAction(userId, 'mark_read', ids.length);
+    } catch (err) {
+      console.error('❌ [EventualConsistency] Failed to handle user action:', err.message);
+    }
+
     // Invalidate cache after marking emails as read (lists/threads) and clear stats cache
     {
       const userId = String(req.auth?.sub);
@@ -289,38 +332,38 @@ router.post('/gmail/mark-read', requireAuth, async (req, res) => {
       await emailCache.invalidateOnAction(userId, 'gmail', 'mark_read', ids);
     }
 
-    // Instant Redis-backed update: decrement unread quickly, then background resync
-    try {
-      const userId = String(req.auth?.sub);
-      const cur = (await emailCache.getUserStats(userId, 'gmail')) || null;
-      if (cur) {
-        const next = { ...cur, unread: Math.max(0, (cur.unread || 0) - ids.length) };
-        await emailCache.setUserStats(userId, 'gmail', next);
-        socketIOService.countUpdated(userId, { unread: next.unread, total: next.total }, 'user_action');
-      }
-    } catch (_) {}
+    // Gmail Eventual Consistency: Use smart delayed resync instead of simple timeout
+    // This handles the case where Gmail API count queries lag behind individual state changes
+    const userId = String(req.auth?.sub);
+    console.log(`🔄 [EventualConsistency] Triggering delayed resync for user ${userId} after mark-read action`);
 
-    // Background resync to accurate Primary-only counts
+    // The eventual consistency manager will:
+    // 1. Wait 4 seconds for Gmail to catch up
+    // 2. Query fresh counts from Gmail API
+    // 3. Smart merge with local counts to prevent stale overwrites
+    // 4. Only broadcast if counts actually changed
     setImmediate(async () => {
       try {
-        const userId = String(req.auth?.sub);
-        const oauth2Client2 = await getGoogleOAuthClientFromCookies(req);
-        const stats = await computePrimaryInboxCounts(oauth2Client2);
-        await emailCache.setUserStats(userId, 'gmail', stats);
-        socketIOService.countUpdated(userId, { unread: stats.unread, total: stats.total }, 'user_action');
-      } catch (_) {}
+        await gmailEventualConsistencyManager.handlePubSubNotification(userId, null, [
+          { type: 'user_action', action: 'mark_read', count: ids.length }
+        ]);
+      } catch (err) {
+        console.error('❌ [EventualConsistency] Failed to handle user action:', err.message);
+      }
     });
 
-    // Return immediate count update to frontend
+    // Return REAL-TIME count update from Gmail API
     try {
-      const userId = String(req.auth?.sub);
-      const currentStats = (await emailCache.getUserStats(userId, 'gmail')) || { unread: 0, total: 0 };
+      const oauth2Client = await getGoogleOAuthClientFromCookies(req);
+      const freshStats = await computePrimaryInboxCounts(oauth2Client);
+      console.log(`📊 [MARK-READ] Fresh Gmail counts after action: ${freshStats.unread} unread / ${freshStats.total} total`);
+
       return res.json({
         ok,
         total: ids.length,
         newCounts: {
-          unread: currentStats.unread,
-          total: currentStats.total
+          unread: freshStats.unread,
+          total: freshStats.total
         }
       });
     } catch (_) {
@@ -367,7 +410,7 @@ router.post('/gmail/mark-unread', requireAuth, async (req, res) => {
         await readState.setOverride(uid, 'gmail', id, 'unread');
         await readState.addUnread(uid, 'gmail', id);
         try {
-          socketIOService.emailUpdated(uid, { id, isRead: false, source: 'user_action' });
+          unifiedBroadcast.emailUpdated(uid, { id, isRead: false, source: 'user_action' });
         } catch (_) {}
         ok += 1;
         setImmediate(async () => {
@@ -406,38 +449,43 @@ router.post('/gmail/mark-unread', requireAuth, async (req, res) => {
       await emailCache.invalidateOnAction(userId, 'gmail', 'mark_unread', ids);
     }
 
-    // Instant Redis-backed update: increment unread quickly, then background resync
+    // Gmail Eventual Consistency: Handle user action with debounced broadcasting
     try {
       const userId = String(req.auth?.sub);
-      const cur = (await emailCache.getUserStats(userId, 'gmail')) || null;
-      if (cur) {
-        const next = { ...cur, unread: Math.max(0, (cur.unread || 0) + ids.length) };
-        await emailCache.setUserStats(userId, 'gmail', next);
-        socketIOService.countUpdated(userId, { unread: next.unread, total: next.total }, 'user_action');
-      }
-    } catch (_) {}
+      console.log(`📊 [EventualConsistency] Handling mark-unread action for ${ids.length} emails`);
 
-    // Background resync to accurate Primary-only counts
+      // This handles: action accumulation, debounced broadcasting, and race condition prevention
+      await gmailEventualConsistencyManager.handleUserAction(userId, 'mark_unread', ids.length);
+    } catch (err) {
+      console.error('❌ [EventualConsistency] Failed to handle user action:', err.message);
+    }
+
+    // Gmail Eventual Consistency: Use smart delayed resync instead of simple timeout
+    const userId = String(req.auth?.sub);
+    console.log(`🔄 [EventualConsistency] Triggering delayed resync for user ${userId} after mark-unread action`);
+
     setImmediate(async () => {
       try {
-        const userId = String(req.auth?.sub);
-        const oauth2Client2 = await getGoogleOAuthClientFromCookies(req);
-        const stats = await computePrimaryInboxCounts(oauth2Client2);
-        await emailCache.setUserStats(userId, 'gmail', stats);
-        socketIOService.countUpdated(userId, { unread: stats.unread, total: stats.total }, 'user_action');
-      } catch (_) {}
+        await gmailEventualConsistencyManager.handlePubSubNotification(userId, null, [
+          { type: 'user_action', action: 'mark_unread', count: ids.length }
+        ]);
+      } catch (err) {
+        console.error('❌ [EventualConsistency] Failed to handle user action:', err.message);
+      }
     });
 
-    // Return immediate count update to frontend
+    // Return REAL-TIME count update from Gmail API
     try {
-      const userId = String(req.auth?.sub);
-      const currentStats = (await emailCache.getUserStats(userId, 'gmail')) || { unread: 0, total: 0 };
+      const oauth2Client = await getGoogleOAuthClientFromCookies(req);
+      const freshStats = await computePrimaryInboxCounts(oauth2Client);
+      console.log(`📊 [MARK-UNREAD] Fresh Gmail counts after action: ${freshStats.unread} unread / ${freshStats.total} total`);
+
       return res.json({
         ok,
         total: ids.length,
         newCounts: {
-          unread: currentStats.unread,
-          total: currentStats.total
+          unread: freshStats.unread,
+          total: freshStats.total
         }
       });
     } catch (_) {
@@ -979,6 +1027,178 @@ router.get('/emails/:emailId/content', requireAuth, async (req, res) => {
       error: 'Failed to fetch email content',
       details: error.message
     });
+  }
+});
+
+// ====================================================================
+// V2 API ENDPOINTS - Redis-based Optimistic Updates with Retry Logic
+// ====================================================================
+
+// Check if V2 is enabled
+function isV2Enabled() {
+  return process.env.REALTIME_SYNC_V2 === 'true';
+}
+
+// V2: Mark messages as read
+router.post('/api/gmail/messages/:id/mark-read', requireAuth, async (req, res) => {
+  if (!isV2Enabled()) {
+    return res.status(404).json({ error: 'V2 API not enabled' });
+  }
+
+  try {
+    const { id } = req.params;
+    const userId = String(req.auth?.sub);
+
+    console.log(`🚀 [V2] Mark read request for message ${id} by user ${userId}`);
+
+    // Use V2 Gmail Event Manager
+    await gmailEventualConsistencyManager.handleUserActionV2(userId, 'mark_read', [id]);
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('❌ [V2] Mark read failed:', error);
+    res.status(500).json({ error: 'Failed to mark message as read' });
+  }
+});
+
+// V2: Mark messages as unread
+router.post('/api/gmail/messages/:id/mark-unread', requireAuth, async (req, res) => {
+  if (!isV2Enabled()) {
+    return res.status(404).json({ error: 'V2 API not enabled' });
+  }
+
+  try {
+    const { id } = req.params;
+    const userId = String(req.auth?.sub);
+
+    console.log(`🚀 [V2] Mark unread request for message ${id} by user ${userId}`);
+
+    // Use V2 Gmail Event Manager
+    await gmailEventualConsistencyManager.handleUserActionV2(userId, 'mark_unread', [id]);
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('❌ [V2] Mark unread failed:', error);
+    res.status(500).json({ error: 'Failed to mark message as unread' });
+  }
+});
+
+// V2: Delete messages
+router.delete('/api/gmail/messages/:id', requireAuth, async (req, res) => {
+  if (!isV2Enabled()) {
+    return res.status(404).json({ error: 'V2 API not enabled' });
+  }
+
+  try {
+    const { id } = req.params;
+    const userId = String(req.auth?.sub);
+
+    console.log(`🚀 [V2] Delete request for message ${id} by user ${userId}`);
+
+    // Use V2 Gmail Event Manager
+    await gmailEventualConsistencyManager.handleUserActionV2(userId, 'delete', [id]);
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('❌ [V2] Delete failed:', error);
+    res.status(500).json({ error: 'Failed to delete message' });
+  }
+});
+
+// V2: Batch email actions
+router.post('/api/gmail/batch-actions', requireAuth, async (req, res) => {
+  if (!isV2Enabled()) {
+    return res.status(404).json({ error: 'V2 API not enabled' });
+  }
+
+  try {
+    const { action, messageIds } = req.body;
+    const userId = String(req.auth?.sub);
+
+    if (!action || !Array.isArray(messageIds) || messageIds.length === 0) {
+      return res.status(400).json({ error: 'action and messageIds are required' });
+    }
+
+    console.log(`🚀 [V2] Batch ${action} request for ${messageIds.length} messages by user ${userId}`);
+
+    // Use V2 Gmail Event Manager
+    await gmailEventualConsistencyManager.handleUserActionV2(userId, action, messageIds);
+
+    res.json({ success: true, processed: messageIds.length });
+  } catch (error) {
+    console.error('❌ [V2] Batch action failed:', error);
+    res.status(500).json({ error: 'Failed to perform batch action' });
+  }
+});
+
+// V2: Get Gmail health status
+router.get('/api/gmail/health', requireAuth, async (req, res) => {
+  if (!isV2Enabled()) {
+    return res.status(404).json({ error: 'V2 API not enabled' });
+  }
+
+  try {
+    const userId = String(req.auth?.sub);
+
+    const [gmailHealth, managerStats, cacheHealth] = await Promise.all([
+      gmailApiHelpers.healthCheck(userId).catch(e => ({ healthy: false, error: e.message })),
+      Promise.resolve(gmailEventualConsistencyManager.getStats()),
+      require('../lib/cache/mailboxCache').getHealth().catch(e => ({ healthy: false, error: e.message }))
+    ]);
+
+    res.json({
+      timestamp: new Date().toISOString(),
+      v2Enabled: true,
+      gmail: gmailHealth,
+      eventManager: managerStats,
+      cache: cacheHealth
+    });
+  } catch (error) {
+    console.error('❌ [V2] Health check failed:', error);
+    res.status(500).json({ error: 'Health check failed' });
+  }
+});
+
+// V2: Manual reconciliation trigger (admin/dev only)
+router.post('/api/gmail/reconcile', requireAuth, async (req, res) => {
+  if (!isV2Enabled()) {
+    return res.status(404).json({ error: 'V2 API not enabled' });
+  }
+
+  if (process.env.NODE_ENV === 'production') {
+    return res.status(403).json({ error: 'Not available in production' });
+  }
+
+  try {
+    const userId = String(req.auth?.sub);
+    const reconciler = require('../jobs/reconcileGmail');
+
+    const result = await reconciler.reconcileUserById(userId);
+    res.json(result);
+  } catch (error) {
+    console.error('❌ [V2] Manual reconciliation failed:', error);
+    res.status(500).json({ error: 'Manual reconciliation failed' });
+  }
+});
+
+// V2: Initialize user cache (admin/dev only)
+router.post('/api/gmail/init-cache', requireAuth, async (req, res) => {
+  if (!isV2Enabled()) {
+    return res.status(404).json({ error: 'V2 API not enabled' });
+  }
+
+  if (process.env.NODE_ENV === 'production') {
+    return res.status(403).json({ error: 'Not available in production' });
+  }
+
+  try {
+    const userId = String(req.auth?.sub);
+
+    await gmailEventualConsistencyManager.initializeUserCacheV2(userId);
+    res.json({ success: true });
+  } catch (error) {
+    console.error('❌ [V2] Cache initialization failed:', error);
+    res.status(500).json({ error: 'Cache initialization failed' });
   }
 });
 

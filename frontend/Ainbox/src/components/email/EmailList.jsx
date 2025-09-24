@@ -25,7 +25,12 @@ import { generateAvatarProps, hasValidAvatar } from '../../utils/avatarUtils'
 import { getInboxDisplayName, getInboxAvatarProps } from '../../utils/emailDisplay'
 import { useSession } from '../../hooks/useSession'
 
-// No more mock data - using real API data
+// EmailList Component - Fixed for stable rendering and proper background colors
+// Key fixes:
+// 1. VirtualList itemKey includes read state + index for proper re-rendering
+// 2. Background colors use CSS classes with clear precedence (selection > read/unread)
+// 3. Smooth transitions with CSS duration-200
+// 4. Removed conflicting inline styles
 
 export default function EmailList({
   emails = [],
@@ -219,10 +224,10 @@ export default function EmailList({
   overscanCount={6}
   itemKey={(index) => {
     const e = filteredEmails[index];
-    // Use stable identity; include read-state so a toggle forces a re-render
-    const id = e?.id ?? e?.messageId ?? index;
-    const r = e?.isRead ? 'r' : 'u';
-    const key = `${id}-${r}`;
+    // FIXED: Include read state AND index for proper re-rendering when status changes
+    const id = e?.id || e?.threadId || e?.messageId || index;
+    const readState = e?.isRead ? 'read' : 'unread';
+    const key = `${id}-${readState}-${index}`;
     console.log(`🔑 VirtualList itemKey for index ${index}: ${key} (email: ${id}, isRead: ${e?.isRead})`);
     return key;
   }}
@@ -241,34 +246,31 @@ export default function EmailList({
               messageId: email.messageId
             });
 
-            const backgroundColor = selectedEmailId === email.id
-              ? undefined // Let selection color take precedence
-              : email.isRead
-                ? 'oklch(98.5% 0.002 247.839)' // Read email background
-                : 'oklch(95.4% 0.038 75.164)' // Unread email background
+            // FIXED: Clear background color precedence - selection > read/unread state
+            const isSelected = selectedEmailId === email.id;
+            const baseClasses = "email-item flex items-center gap-4 p-3 cursor-pointer border-b border-gray-100 transition-colors duration-200";
 
-            console.log(`🎨 Background color for ${email.id}: ${backgroundColor || 'selection color'}`);
+            console.log(`🎨 Email ${email.id} rendering: selected=${isSelected}, isRead=${email.isRead}`);
 
             return (
               <div
-                key={`${email.id}-${email.isRead ? 'read' : 'unread'}`}
-                style={{
-                  ...style,
-                  backgroundColor
-                }}
-                ref={(el) => {
-                  if (el) {
-                    console.log(`🎨 EmailList: DOM element for ${email.id} rendered with background: ${el.style.backgroundColor}`);
-                  }
-                }}
+                key={`${email.id || email.threadId}-${email.isRead ? 'read' : 'unread'}-${index}`}
+                style={style}
                 className={cn(
-                  "email-item flex items-center gap-4 p-3 hover:bg-gray-50 cursor-pointer transition-colors border-b border-gray-100",
-                  // Apply read/unread background first, then selection highlight so selection wins
-                  email.isRead ? "read" : "unread",
-                  selectedEmailId === email.id && "bg-blue-50 border-r-2 border-blue-500"
+                  baseClasses,
+                  // FIXED: Clear precedence - selection highlight overrides read/unread
+                  isSelected
+                    ? "bg-blue-50 border-r-2 border-blue-500" // Selection takes priority
+                    : email.isRead
+                      ? "bg-gray-50/30 hover:bg-gray-100/50" // Read email styling
+                      : "font-medium", // Unread email styling with custom background
+                  // Apply custom unread background color
+                  !isSelected && !email.isRead && "unread-email-bg",
+                  "hover:bg-gray-100" // Hover state for all emails
                 )}
                 data-message-id={email.id}
                 data-thread-id={email.threadId}
+                data-message-id-raw={email.messageId}
                 data-read-status={email.isRead ? 'read' : 'unread'}
                 onClick={() => onEmailSelect(email.id)}
               >

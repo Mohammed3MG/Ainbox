@@ -6,21 +6,22 @@ const cache = require('../../lib/cache');
 const { query } = require('../../lib/db');
 const { decrypt } = require('../../utils/secure');
 const { broadcastToUser } = require('../../lib/sse');
+const gmailEventualConsistencyManager = require('../../lib/gmailEventualConsistencyManager');
 
 /**
  * Gmail Push Notification Webhook Endpoint
  * This endpoint receives notifications from Google Cloud Pub/Sub
  * when Gmail mailbox changes occur
  */
+
 router.post('/gmail/notifications', express.json(), async (req, res) => {
   try {
-    console.log('📨 Received Gmail Push notification');
-    console.log('🔍 Raw request body:', req.body);
-    console.log('🔍 Headers:', JSON.stringify(req.headers, null, 2));
+    console.log('📨 [DEBUG] Received Gmail Push notification at', new Date().toISOString());
+    console.log('📨 [DEBUG] Request headers:', JSON.stringify(req.headers, null, 2));
+    console.log('📨 [DEBUG] Request body:', JSON.stringify(req.body, null, 2));
 
     // Parse Pub/Sub message (already parsed by express.json())
     const pubsubMessage = req.body;
-    console.log('🔍 Parsed Pub/Sub message:', JSON.stringify(pubsubMessage, null, 2));
 
     if (!pubsubMessage.message || !pubsubMessage.message.data) {
       console.warn('⚠️  Invalid Pub/Sub message format');
@@ -34,13 +35,14 @@ router.post('/gmail/notifications', express.json(), async (req, res) => {
       Buffer.from(pubsubMessage.message.data, 'base64').toString()
     );
 
-    console.log('📧 Gmail notification data:', JSON.stringify(messageData, null, 2));
-    console.log('🔍 Decoded fields - Email:', messageData.emailAddress, 'HistoryId:', messageData.historyId);
+    console.log('📧 [DEBUG] Gmail notification data:', JSON.stringify(messageData, null, 2));
 
     const { emailAddress, historyId } = messageData;
+    console.log('📧 [DEBUG] Extracted emailAddress:', emailAddress);
+    console.log('📧 [DEBUG] Extracted historyId:', historyId);
 
     if (!emailAddress || !historyId) {
-      console.warn('⚠️  Missing required fields in Gmail notification');
+      console.warn('⚠️ [DEBUG] Missing required fields in Gmail notification');
       res.status(200).end();
       return;
     }
@@ -51,14 +53,40 @@ router.post('/gmail/notifications', express.json(), async (req, res) => {
     // Process asynchronously without blocking webhook ACK
     setImmediate(async () => {
       try {
+        console.log(`🔍 [DEBUG] Looking up user for email: ${emailAddress}`);
         const user = await findUserByEmail(emailAddress);
         if (!user) {
           console.warn(`⚠️  User not found for email: ${emailAddress}`);
           return;
         }
-        await handleGmailNotification(user, historyId);
+        console.log(`✅ [DEBUG] Found user: ${user.id} for email: ${emailAddress}`);
+
+        // Check if we should use V2 system
+        if (process.env.REALTIME_SYNC_V2 === 'true') {
+          console.log('🚀 [V2 DEBUG] Processing notification with new Redis-based system');
+          console.log(`🚀 [V2 DEBUG] Data being sent to processNotificationV2:`, {
+            userId: user.id,
+            historyId: historyId,
+            emailId: messageData.messageId || null,
+            emailAddress: emailAddress,
+            timestamp: new Date().toISOString()
+          });
+
+          await gmailEventualConsistencyManager.processNotificationV2(user.id, {
+            historyId: historyId,
+            emailId: messageData.messageId || null,
+            emailAddress: emailAddress,
+            timestamp: new Date().toISOString()
+          });
+
+          console.log(`✅ [V2 DEBUG] processNotificationV2 completed for user ${user.id}`);
+        } else {
+          console.log('🔄 [V1] Processing notification with legacy system');
+          await handleGmailNotification(user, historyId);
+        }
       } catch (err) {
-        console.error('❌ Async processing failed:', err);
+        console.error('❌ [DEBUG] Async processing failed:', err);
+        console.error('❌ [DEBUG] Error stack:', err.stack);
       }
     });
 
@@ -77,7 +105,9 @@ function lastHistoryCacheKey(userId) {
 // Main handler for Gmail notifications
 async function handleGmailNotification(user, notificationHistoryId) {
   const userId = String(user.id);
-  console.log(`🔔 Handling Gmail notification for user ${userId} (${user.email})`);
+  console.log(`🔔 [DEBUG] Handling Gmail notification for user ${userId} (${user.email})`);
+  console.log(`🔔 [DEBUG] Notification historyId: ${notificationHistoryId}`);
+  console.log(`🔔 [DEBUG] User refresh token exists: ${!!user.refreshToken}`);
 
   const oauth2Client = new google.auth.OAuth2(
     process.env.GOOGLE_CLIENT_ID,
@@ -86,20 +116,31 @@ async function handleGmailNotification(user, notificationHistoryId) {
   );
   oauth2Client.setCredentials({ refresh_token: user.refreshToken });
   const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
+  console.log(`🔔 [DEBUG] Gmail API client created successfully`);
 
   // Bootstrap if we don't have a starting historyId
   let startHistoryId = await cache.get(lastHistoryCacheKey(userId));
+  console.log(`🔔 [DEBUG] Current startHistoryId from cache: ${startHistoryId}`);
+
   if (!startHistoryId) {
     try {
+      console.log(`🔔 [DEBUG] No startHistoryId found, bootstrapping...`);
       const profile = await gmail.users.getProfile({ userId: 'me' });
       startHistoryId = profile.data.historyId;
       await cache.set(lastHistoryCacheKey(userId), String(startHistoryId));
-      console.log(`📝 Bootstrapped historyId for user ${userId}: ${startHistoryId}`);
+      console.log(`📝 [DEBUG] Bootstrapped historyId for user ${userId}: ${startHistoryId}`);
       return; // Nothing to process on first notification
     } catch (e) {
-      console.error('❌ Failed to bootstrap historyId:', e?.message || e);
+      console.error('❌ [DEBUG] Failed to bootstrap historyId:', e?.message || e);
       return;
     }
+  }
+
+  console.log(`🔔 [DEBUG] Processing history changes from ${startHistoryId} to ${notificationHistoryId}`);
+
+  if (startHistoryId === notificationHistoryId) {
+    console.log(`🔔 [DEBUG] No changes - historyId unchanged: ${startHistoryId}`);
+    return;
   }
 
   // Walk history pages since last processed ID
@@ -109,6 +150,7 @@ async function handleGmailNotification(user, notificationHistoryId) {
   let newLatestHistoryId = null;
 
   do {
+    console.log(`🔔 [DEBUG] Calling Gmail history API with startHistoryId: ${startHistoryId}, pageToken: ${pageToken}`);
     const resp = await gmail.users.history.list({
       userId: 'me',
       startHistoryId: String(startHistoryId),
@@ -118,6 +160,7 @@ async function handleGmailNotification(user, notificationHistoryId) {
     });
     newLatestHistoryId = resp.data.historyId || newLatestHistoryId;
     const history = resp.data.history || [];
+    console.log(`🔔 [DEBUG] Gmail API returned ${history.length} history items, newLatestHistoryId: ${newLatestHistoryId}`);
     for (const h of history) {
       if (Array.isArray(h.messagesAdded)) {
         for (const m of h.messagesAdded) {
@@ -161,10 +204,22 @@ async function handleGmailNotification(user, notificationHistoryId) {
       } catch (_) {}
 
       // Emit via Socket.IO using standardized event names
-      try { socketIOService.newEmail(userId, message); } catch (_) {}
+      try {
+        console.log(`🔔 [DEBUG] Sending newEmail via Socket.IO for user ${userId}, messageId: ${message.id}`);
+        socketIOService.newEmail(userId, message);
+        console.log(`🔔 [DEBUG] ✅ Socket.IO newEmail sent successfully`);
+      } catch (e) {
+        console.error(`🔔 [DEBUG] ❌ Socket.IO newEmail failed:`, e);
+      }
 
       // Also emit via SSE for any listeners
-      try { broadcastToUser(userId, { type: 'email_updated', changeType: 'added', messageId: message.id, threadId: message.threadId, emailDetail: message, timestamp: new Date().toISOString() }); } catch (_) {}
+      try {
+        console.log(`🔔 [DEBUG] Sending email_updated via SSE for user ${userId}, messageId: ${message.id}`);
+        broadcastToUser(userId, { type: 'email_updated', changeType: 'added', messageId: message.id, threadId: message.threadId, emailDetail: message, timestamp: new Date().toISOString() });
+        console.log(`🔔 [DEBUG] ✅ SSE email_updated sent successfully`);
+      } catch (e) {
+        console.error(`🔔 [DEBUG] ❌ SSE email_updated failed:`, e);
+      }
 
     } catch (e) {
       console.error('❌ Failed to upsert message', msgId, e?.message || e);
@@ -206,13 +261,28 @@ async function handleGmailNotification(user, notificationHistoryId) {
     }
   }
 
-  // Optionally emit updated counters
+  // Gmail Eventual Consistency: Use delayed resync instead of immediate count updates
+  // Immediate count queries often return stale data, so we let the eventual consistency manager handle this
+  console.log(`🔄 [EventualConsistency] Triggering delayed resync for Pub/Sub notification (user: ${userId}, historyId: ${notificationHistoryId})`);
+
+  // Collect immediate status updates for the consistency manager
+  const immediateUpdates = [];
+  for (const ch of labelChanges) {
+    if (ch.add?.includes('UNREAD') || ch.remove?.includes('UNREAD')) {
+      immediateUpdates.push({
+        type: 'email_status_changed',
+        messageId: ch.id,
+        isRead: ch.remove?.includes('UNREAD') ? true : false,
+        source: 'pubsub_label_change'
+      });
+    }
+  }
+
+  // Use the eventual consistency manager for smart delayed resync
   try {
-    const counts = await getInboxCounts(gmail);
-    try { socketIOService.countUpdated(userId, counts, 'pubsub_notification'); } catch (_) {}
-    try { broadcastToUser(userId, { type: 'unread_count_updated', unread: counts.unread, total: counts.total, source: 'pubsub_notification', timestamp: new Date().toISOString() }); } catch (_) {}
+    await gmailEventualConsistencyManager.handlePubSubNotification(userId, notificationHistoryId, immediateUpdates);
   } catch (e) {
-    console.warn('⚠️ Failed to compute inbox counts:', e?.message || e);
+    console.error('❌ [EventualConsistency] Failed to handle Pub/Sub notification:', e?.message || e);
   }
 
   // Advance last processed historyId (monotonic)
@@ -382,9 +452,15 @@ function serializeForUI(message) {
 }
 
 async function getInboxCounts(gmail) {
-  // Primary inbox counts
-  const unreadResp = await gmail.users.messages.list({ userId: 'me', labelIds: ['INBOX', 'UNREAD'] });
-  const totalResp = await gmail.users.messages.list({ userId: 'me', labelIds: ['INBOX'] });
+  // Primary inbox counts - FIXED: Use category:primary to only count primary emails (not promotions/social/etc)
+  const unreadResp = await gmail.users.messages.list({
+    userId: 'me',
+    q: 'category:primary is:unread'
+  });
+  const totalResp = await gmail.users.messages.list({
+    userId: 'me',
+    q: 'category:primary'
+  });
   return {
     unread: unreadResp.data?.resultSizeEstimate || 0,
     total: totalResp.data?.resultSizeEstimate || 0,

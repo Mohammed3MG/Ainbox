@@ -15,7 +15,7 @@ const testWebhook = async () => {
       publishTime: new Date().toISOString()
     }
   };
-
+  
   try {
     console.log('🧪 Testing Gmail webhook notification...');
     console.log('URL:', webhookUrl);
@@ -55,7 +55,7 @@ const testSpecificEmail = async (messageId) => {
   const testData = {
     message: {
       data: Buffer.from(JSON.stringify({
-        emailAddress: 'your-test-email@gmail.com', // Replace with your actual email
+        emailAddress: 'mohamedsorguli@gmail.com', 
         historyId: Date.now().toString()
       })).toString('base64'),
       messageId: 'test-' + messageId,

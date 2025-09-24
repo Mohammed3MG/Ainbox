@@ -5,7 +5,8 @@ class GmailPubSubService {
   constructor() {
     this.pubsub = new PubSub({
       projectId: process.env.GOOGLE_CLOUD_PROJECT_ID,
-      keyFilename: process.env.GOOGLE_CLOUD_KEY_FILE, // Optional: Use service account key
+      // Removed keyFilename to use default Application Default Credentials
+      // This will work if GOOGLE_APPLICATION_CREDENTIALS is set or in Google Cloud environment
     });
 
     this.gmail = null;
@@ -327,16 +328,16 @@ class GmailPubSubService {
 
       await this.initializeGmailClient(userWatch.accessToken, userWatch.refreshToken);
 
-      // Get unread count
+      // FIXED: Get primary inbox counts only (not promotions/social/etc) - matches main stats endpoint
       const unreadResponse = await this.gmail.users.messages.list({
         userId: 'me',
-        labelIds: ['INBOX', 'UNREAD'],
+        q: 'category:primary is:unread'
       });
 
-      // Get total inbox count
+      // Get total primary inbox count
       const totalResponse = await this.gmail.users.messages.list({
         userId: 'me',
-        labelIds: ['INBOX'],
+        q: 'category:primary'
       });
 
       const unreadCount = unreadResponse.data.resultSizeEstimate || 0;
@@ -397,7 +398,18 @@ class GmailPubSubService {
       const subscriptionName = this.subscriptionName.split('/').pop(); // Gets 'fylApp_push'
       const subscription = this.pubsub.subscription(subscriptionName);
 
-      // Handle incoming messages from Gmail
+      // Check if this is a push subscription and handle accordingly
+      const [metadata] = await subscription.getMetadata();
+      console.log(`📡 Subscription type: ${metadata.pushConfig?.pushEndpoint ? 'PUSH' : 'PULL'}`);
+
+      if (metadata.pushConfig?.pushEndpoint) {
+        console.log(`⚠️ This is a PUSH subscription, but you're trying to use PULL methods.`);
+        console.log(`📡 PUSH subscriptions deliver messages to webhooks, not to listeners.`);
+        console.log(`📡 Messages will be received via the webhook endpoint: /webhooks/gmail/notifications`);
+        return; // Don't try to set up pull listeners for push subscriptions
+      }
+
+      // Handle incoming messages from Gmail (PULL subscription only)
       subscription.on('message', async (message) => {
         try {
           console.log('📨 Received Gmail Pub/Sub notification:', message.id);

@@ -13,6 +13,12 @@ import gmailSyncService from '../../services/syncApi.js';
  */
 export default function RealTimeEmailBridge() {
   useEffect(() => {
+    const USE_SSE = false; // Prefer Socket.IO over SSE
+    if (!USE_SSE) {
+      console.log('🌉 Real-Time Email Bridge (SSE) disabled; using Socket.IO listeners instead');
+      return () => {};
+    }
+
     console.log('🌉 Initializing Real-Time Email Bridge');
 
     // Ensure SSE/stream is connected (idempotent)

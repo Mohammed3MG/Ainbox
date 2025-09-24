@@ -1,4 +1,5 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import {
   getEmails,
   getEmailThread,
@@ -18,7 +19,9 @@ import {
   clearEmailCache
 } from '../services/emailApi'
 import socketService from '../services/socketApi'
+import { useSession } from './useSession'
 import { useRealTimeEmailBridge } from '../components/email/RealTimeEmailBridge'
+import { queryClient, queryKeys } from '../services/queryClient'
 
 // ✅ Helpers for matching and updating read status
 function matchesEmailByAnyId(email, anyId) {
@@ -94,34 +97,28 @@ export function useEmail() {
   const [pageNextCursors, setPageNextCursors] = useState([null]) // nextCursor available from each page
   const [total, setTotal] = useState(0)
   const [selectedEmails, setSelectedEmails] = useState(new Set())
-  const [unreadCount, setUnreadCount] = useState(0)
   const [spamUnreadCount, setSpamUnreadCount] = useState(0)
   const unsubscribeRef = useRef(null)
 
-  // Debug: Log email state changes whenever emails array changes
+  // 🚀 LOCAL STATE APPROACH: Calculate unread count directly from emails array
+  const unreadCount = useMemo(() => {
+    const localCount = emails.filter(email => !email.isRead).length
+    console.log(`📊 [LOCAL COUNT] Calculated from email list: ${localCount} unread emails`)
+    return localCount
+  }, [emails])
+
+  // 🚀 LOCAL STATE APPROACH: No complex count management needed!
+  // Unread count is now always accurate and derived from email list state
+
+  // 🚀 LOCAL STATE APPROACH: No stats API needed!
+  // Count is calculated from email list, total comes from email list fetches
+
+  // 🚀 LOCAL STATE APPROACH: No complex count management functions needed!
+
+  // 🚀 LOCAL STATE APPROACH: Count is always accurate, no validation needed!
   useEffect(() => {
     if (emails.length > 0) {
-      logEmailListState(emails, 'EMAILS_STATE_CHANGED');
-
-      // Validate unread count accuracy
-      const unreadInList = emails.filter(e => !e.isRead).length;
-      if (unreadInList !== unreadCount) {
-        console.warn(`🚨 COUNT MISMATCH DETECTED!`);
-        console.warn(`   📧 Emails in list marked as unread: ${unreadInList}`);
-        console.warn(`   📊 UnreadCount state: ${unreadCount}`);
-        console.warn(`   🔍 Difference: ${unreadCount - unreadInList}`);
-
-        // Log the unread emails for debugging
-        const unreadEmails = emails.filter(e => !e.isRead);
-        console.warn(`   📋 Unread emails in list:`, unreadEmails.map(e => ({
-          id: e.id,
-          threadId: e.threadId,
-          subject: e.subject?.substring(0, 40) + '...',
-          isRead: e.isRead
-        })));
-      } else {
-        console.log(`✅ Count validation PASSED: ${unreadInList} unread emails`);
-      }
+      console.log(`📧 [LOCAL COUNT] Email list updated: ${emails.length} total, ${unreadCount} unread`)
     }
   }, [emails, unreadCount])
 
@@ -137,6 +134,17 @@ export function useEmail() {
 
       // Always replace current view with the fetched page
       setEmails(formattedEmails)
+
+      // Populate React Query cache for the current folder/search
+      try {
+        const key = queryKeys.emails(folder, search)
+        queryClient.setQueryData(key, {
+          emails: formattedEmails,
+          total: response.total || formattedEmails.length,
+          hasMore: !!response.nextCursor,
+          nextCursor: response.nextCursor || null,
+        })
+      } catch (_) {}
 
       setHasMore(response.hasMore)
       setNextCursor(response.nextCursor || null)
@@ -296,60 +304,39 @@ export function useEmail() {
     console.log('📧 performEmailAction called:', action, ids)
     console.log('📧 Current unread count before action:', unreadCount)
 
-    // Update local state optimistically FIRST (match by id, threadId, messageId)
-    let unreadDelta = 0
+    // 🚀 LOCAL STATE APPROACH: Update emails, count updates automatically!
     setEmails(prev => {
-      console.log('📧 BEFORE optimistic update:');
-      logEmailListState(prev, 'BEFORE_OPTIMISTIC_UPDATE', ids[0]);
+      console.log('📧 [LOCAL COUNT] BEFORE optimistic update:', prev.length, 'emails');
 
       const updated = prev.map(email => {
         const matches = ids.includes(email.id) || ids.includes(email.threadId) || ids.includes(email.messageId)
         if (matches) {
           switch (action) {
             case 'read':
-              console.log('📧 Updating email to read:', email.id, 'was unread:', !email.isRead)
-              if (!email.isRead) {
-                unreadDelta -= 1
-                console.log('📧 Unread delta decreased by 1, new delta:', unreadDelta)
-              }
+              console.log('📧 [LOCAL COUNT] Marking email as read:', email.id)
               return { ...email, isRead: true }
-          case 'unread':
-            if (email.isRead) unreadDelta += 1
-            return { ...email, isRead: false }
-          case 'star':
-            return { ...email, isStarred: true }
-          case 'unstar':
-            return { ...email, isStarred: false }
-          case 'archive':
-          case 'delete':
-            if (!email.isRead) unreadDelta -= 1
-            return null
-          default:
-            return email
-        }
+            case 'unread':
+              console.log('📧 [LOCAL COUNT] Marking email as unread:', email.id)
+              return { ...email, isRead: false }
+            case 'star':
+              return { ...email, isStarred: true }
+            case 'unstar':
+              return { ...email, isStarred: false }
+            case 'archive':
+            case 'delete':
+              console.log('📧 [LOCAL COUNT] Removing email:', email.id)
+              return null
+            default:
+              return email
+          }
         }
         return email
       })
 
       const filtered = updated.filter(Boolean);
-
-      console.log('📧 AFTER optimistic update:');
-      logEmailListState(filtered, 'AFTER_OPTIMISTIC_UPDATE', ids[0]);
-
+      console.log('📧 [LOCAL COUNT] AFTER optimistic update:', filtered.length, 'emails');
       return filtered;
     })
-
-    // Adjust unread counters locally first (inbox only)
-    console.log('📧 Applying unread delta:', unreadDelta, 'to current count:', unreadCount)
-    let optimisticUpdateApplied = false
-    if (unreadDelta !== 0) {
-      setUnreadCount((prev) => {
-        const newCount = Math.max(0, prev + unreadDelta)
-        console.log('📧 Updated unread count from', prev, 'to', newCount)
-        optimisticUpdateApplied = true
-        return newCount
-      })
-    }
 
     // Clear selection after bulk actions
     if (ids.length > 1 || selectedEmails.has(ids[0])) {
@@ -381,30 +368,16 @@ export function useEmail() {
     try {
       switch (action) {
         case 'read':
-          markEmailAsRead(threadIds, ids).then(result => {
-            if (result.immediateUpdate && result.newCounts && !optimisticUpdateApplied) {
-              // Only apply backend count if we didn't already do optimistic update
-              setUnreadCount(result.newCounts.unread)
-              setTotal(result.newCounts.total)
-              console.log('📊 Immediate count update (read):', result.newCounts)
-            } else if (optimisticUpdateApplied) {
-              console.log('📊 Skipping backend count update - optimistic update already applied')
-            }
+          markEmailAsRead(threadIds, ids).then(() => {
+            console.log('📧 [LOCAL COUNT] Backend sync completed for read action')
             clearEmailCache()
           }).catch(error => {
             console.error('Backend sync failed for read:', error)
           })
           break
         case 'unread':
-          markEmailAsUnread(threadIds).then(result => {
-            if (result.immediateUpdate && result.newCounts && !optimisticUpdateApplied) {
-              // Only apply backend count if we didn't already do optimistic update
-              setUnreadCount(result.newCounts.unread)
-              setTotal(result.newCounts.total)
-              console.log('📊 Immediate count update (unread):', result.newCounts)
-            } else if (optimisticUpdateApplied) {
-              console.log('📊 Skipping backend count update - optimistic update already applied')
-            }
+          markEmailAsUnread(threadIds).then(() => {
+            console.log('📧 [LOCAL COUNT] Backend sync completed for unread action')
             clearEmailCache()
           }).catch(error => {
             console.error('Backend sync failed for unread:', error)
@@ -437,13 +410,9 @@ export function useEmail() {
       console.error('Email action error:', error)
     }
 
-    // Refresh stats from server for accuracy (async)
+    // 🚀 LOCAL STATE APPROACH: No server stats needed!
+    // Spam counts still use server API for now
     setTimeout(async () => {
-      try {
-        const stats = await getInboxStats()
-        setUnreadCount(stats.unread || 0)
-        if (Number.isFinite(stats.total)) setTotal(stats.total)
-      } catch (_) { /* ignore */ }
       try {
         const s = await getSpamStats()
         setSpamUnreadCount(s.unread || 0)
@@ -463,44 +432,121 @@ export function useEmail() {
     }
   }), [])
 
-  // Real-time updates (legacy SSE -> we keep only count updates to avoid double-processing)
+  // Real-time updates via SSE (disabled; prefer Socket.IO)
+  const USE_SSE = false;
   useEffect(() => {
+    if (!USE_SSE) {
+      console.log('📡 [DEBUG SSE] SSE subscription disabled (using Socket.IO)');
+      return () => {};
+    }
+    console.log(`📡 [DEBUG SSE] 🚀 SETTING UP SSE subscription...`);
+
     const unsubscribe = subscribeToEmailUpdates((update) => {
+      console.log(`📡 [DEBUG SSE] 📨 RAW SSE update received:`, JSON.stringify(update, null, 2));
+      console.log(`📡 [DEBUG SSE] Update type: ${update.type}`);
+
       switch (update.type) {
         case 'new_email':
-          // Skipped - handled by Socket.IO / Bridge
+          console.log(`📡 [DEBUG SSE] 📧 new_email - SKIPPED (handled by Socket.IO/Bridge)`);
           break
         case 'unread_count_updated':
-          if (typeof update.unread === 'number') setUnreadCount(update.unread)
-          if (typeof update.total === 'number') setTotal(update.total)
+          console.log(`📡 [DEBUG SSE] 📊 unread_count_updated received:`, {
+            unread: update.unread,
+            total: update.total,
+            source: update.source
+          });
+          console.log(`📡 [DEBUG SSE] 📊 SSE count update ignored - using local count only:`, update.unread);
+          // 🚀 LOCAL STATE APPROACH: Ignore server count updates!
+          if (typeof update.total === 'number') {
+            console.log(`📡 [DEBUG SSE] 📊 Setting total to ${update.total}`);
+            setTotal(update.total);
+          }
           break
-        case 'email_updated':
-          // Skipped - handled by Socket.IO / Bridge
-          break
+        case 'email_updated': {
+          console.log(`📡 [DEBUG SSE] 📧 email_updated received:`, update);
+          // Handle email status updates (read/unread changes)
+          const emailId = update.emailId;
+          const isRead = update.isRead;
+
+          console.log(`📡 [DEBUG SSE] Extracted - emailId: ${emailId}, isRead: ${isRead}`);
+
+          if (emailId && typeof isRead === 'boolean') {
+            console.log(`📡 [DEBUG SSE] ✅ Valid email_updated: ${emailId} → ${isRead ? 'read' : 'unread'}`);
+
+            setEmails(prev => {
+              console.log(`📡 [DEBUG SSE] Updating emails state, current count: ${prev.length}`);
+              const updatedEmails = prev.map(email => {
+                if (matchesEmailByAnyId(email, emailId)) {
+                  console.log(`📡 [DEBUG SSE] ✅ MATCH FOUND for ${emailId}:`, {
+                    emailId: email.id,
+                    currentIsRead: email.isRead,
+                    newIsRead: isRead
+                  });
+                  const updatedEmail = applyReadFlagAndLabels(email, isRead);
+                  console.log(`📡 [DEBUG SSE] 🎨 EMAIL UPDATE: ${email.id} - ${email.isRead ? 'read' : 'unread'} → ${updatedEmail.isRead ? 'read' : 'unread'}`);
+                  return updatedEmail;
+                }
+                return email;
+              });
+
+              console.log(`📡 [DEBUG SSE] 📝 Email list updated via SSE`);
+              logEmailListState(updatedEmails, 'SSE_EMAIL_STATUS_UPDATED', emailId);
+              return updatedEmails;
+            });
+
+            // Update unread count
+            if (typeof isRead === 'boolean') {
+              const delta = isRead ? -1 : 1;
+              console.log(`📡 [DEBUG SSE] 📊 Updating unread count by ${delta} (SSE)`);
+              setUnreadCount(prev => Math.max(0, prev + delta));
+              console.log(`📡 [DEBUG SSE] 📊 ✅ Unread count update completed`);
+            }
+          } else {
+            console.log(`📡 [DEBUG SSE] ❌ Invalid email_updated data - emailId: ${emailId}, isRead: ${isRead}`);
+          }
+          break;
+        }
         case 'email_deleted':
+          console.log(`📡 [DEBUG SSE] 🗑️ email_deleted received:`, update);
           setEmails(prev => prev.filter(email => email.id !== update.emailId))
           setTotal(prev => Math.max(0, prev - 1))
+          console.log(`📡 [DEBUG SSE] 🗑️ ✅ Email deleted from state`);
           break
         default:
+          console.log(`📡 [DEBUG SSE] ❓ Unknown update type: ${update.type}`);
           break
       }
     })
 
     unsubscribeRef.current = unsubscribe
+    console.log(`📡 [DEBUG SSE] ✅ SSE subscription established`);
 
     return () => {
+      console.log(`📡 [DEBUG SSE] 🛑 CLEANING UP SSE subscription...`);
       if (unsubscribeRef.current) {
         unsubscribeRef.current()
+        console.log(`📡 [DEBUG SSE] ✅ SSE subscription cleaned up`);
       }
     }
   }, [])
 
   // Real-time Socket.IO service for instant email state updates
+  const { user, loading: sessionLoading } = useSession()
   useEffect(() => {
     if (!window.pageLoadTime) window.pageLoadTime = Date.now()
 
-    const userId = 1; // TODO: replace with real user id from auth
-    console.log('🔌 [HOOK] Connecting to Socket.IO service...')
+    if (sessionLoading) {
+      console.log('🔌 [HOOK] Waiting for session to load before connecting Socket.IO...')
+      return
+    }
+
+    const userId = user?.id
+    if (!userId) {
+      console.warn('🔌 [HOOK] No authenticated user ID found; skipping Socket.IO connect')
+      return
+    }
+
+    console.log('🔌 [HOOK] Connecting to Socket.IO service with userId:', userId)
     socketService.connect(userId, 'auth-token')
     console.log('🔌 [HOOK] Socket.IO connection initiated')
 
@@ -557,53 +603,57 @@ export function useEmail() {
         logEmailListState(updatedEmails, 'AFTER_SOCKET_UPDATE', incomingId);
         return updatedEmails;
       });
+
+      // React Query cache: update current inbox list if present
+      try {
+        const key = queryKeys.emails('inbox', '')
+        queryClient.setQueryData(key, (existing) => {
+          if (!existing || !existing.emails) return existing
+          const updated = existing.emails.map(e => matchesEmailByAnyId(e, incomingId)
+            ? applyReadFlagAndLabels(e, typeof data.isRead === 'boolean' ? data.isRead : e.isRead)
+            : e)
+          return { ...existing, emails: updated }
+        })
+      } catch (_) {}
     })
 
     const unsubscribeCountUpdate = socketService.addEventListener('unreadCountUpdate', (data) => {
-      console.log('📊 Socket.IO unread count update received:', data)
-      if (typeof data.unread === 'number') {
-        console.log('📊 Updating unread count via Socket.IO from', unreadCount, 'to', data.unread)
-        setUnreadCount(data.unread)
-      }
+      console.log('📊 [LOCAL COUNT] Socket.IO count update received (ignoring - using local count):', data)
+      // 🚀 LOCAL STATE APPROACH: Ignore server count updates, use local count only!
       if (typeof data.total === 'number') setTotal(data.total)
     })
 
     const unsubscribeNewEmail = socketService.addEventListener('newEmail', (data) => {
       if (data.email) {
         const formattedEmail = formatEmailForDisplay(data.email)
+        console.log('📧 [LOCAL COUNT] New email added, unread count will update automatically')
         setEmails(prev => [formattedEmail, ...prev])
         setTotal(prev => prev + 1)
-        if (!formattedEmail.isRead) setUnreadCount(prev => prev + 1)
+        // 🚀 LOCAL STATE APPROACH: Count updates automatically when email list changes!
+
+        // Update list cache (prepend) if present
+        try {
+          const key = queryKeys.emails('inbox', '')
+          queryClient.setQueryData(key, (existing) => {
+            if (!existing) return existing
+            const emails = Array.isArray(existing.emails) ? existing.emails : []
+            return { ...existing, emails: [formattedEmail, ...emails], total: (existing.total || emails.length) + 1 }
+          })
+        } catch (_) {}
       }
     })
 
     const unsubscribeEmailDeleted = socketService.addEventListener('emailDeleted', (data) => {
       if (data.emailId) {
-        console.log('📧 Email deletion event received:', data);
-        const emailToRemove = emails.find(email =>
+        console.log('📧 [LOCAL COUNT] Email deletion event received, unread count will update automatically:', data);
+        setEmails(prev => prev.filter(email => !(
           email.id === data.emailId ||
           email.threadId === data.emailId ||
           email.messageId === data.emailId ||
           email.conversationId === data.emailId
-        );
-
-        if (emailToRemove) {
-          console.log(`🗑️ Removing ${data.reason === 'thread_not_found' ? 'stale' : 'deleted'} email from list:`, emailToRemove.id);
-          setEmails(prev => prev.filter(email => !(
-            email.id === data.emailId ||
-            email.threadId === data.emailId ||
-            email.messageId === data.emailId ||
-            email.conversationId === data.emailId
-          )));
-          setTotal(prev => Math.max(0, prev - 1));
-          // If the removed email was unread, decrease unread count
-          if (emailToRemove && !emailToRemove.isRead) {
-            console.log('📊 Decreasing unread count due to stale email removal');
-            setUnreadCount(prev => Math.max(0, prev - 1));
-          }
-        } else {
-          console.log('📧 Email to delete not found in current list:', data.emailId);
-        }
+        )));
+        setTotal(prev => Math.max(0, prev - 1));
+        // 🚀 LOCAL STATE APPROACH: Count updates automatically when email list changes!
       }
     })
 
@@ -635,54 +685,72 @@ export function useEmail() {
       unsubscribeEmailDeleted()
       unsubscribeActionBroadcast()
     }
-  }, [loadEmails])
+  }, [loadEmails, user, sessionLoading])
 
   // Real-Time Email Bridge Integration (Gmail Pub/Sub → React State)
   useRealTimeEmailBridge(
     // 1) Immediate email status updates
     (data) => {
-      console.log('🌉 Real-Time Bridge emailStatusUpdate received:', data);
+      console.log('🌉 [DEBUG BRIDGE] 📨 Real-Time Bridge emailStatusUpdate received:', JSON.stringify(data, null, 2));
 
       const incomingId =
         data.emailId || data.gmailMessageId || data.messageId || data.threadId || data.conversationId;
+      console.log('🌉 [DEBUG BRIDGE] Extracted ID:', incomingId);
+
       if (!incomingId) {
-        console.warn('⚠️ No valid ID found in Bridge data:', data);
+        console.warn('🌉 [DEBUG BRIDGE] ❌ No valid ID found in Bridge data:', data);
         return;
       }
 
-      console.log(`🔍 Bridge: Looking for email with ID: ${incomingId}`);
+      console.log(`🌉 [DEBUG BRIDGE] 🔍 Looking for email with ID: ${incomingId}`);
+      console.log(`🌉 [DEBUG BRIDGE] Current emails in state:`, emails.map(e => ({
+        id: e.id,
+        threadId: e.threadId,
+        messageId: e.messageId,
+        isRead: e.isRead
+      })));
 
+      let foundMatch = false;
       setEmails(prev => {
+        console.log(`🌉 [DEBUG BRIDGE] Processing ${prev.length} emails for match...`);
         const updatedEmails = prev.map(email => {
-          if (!matchesEmailByAnyId(email, incomingId)) return email;
+          const isMatch = matchesEmailByAnyId(email, incomingId);
+          if (isMatch) {
+            foundMatch = true;
+            console.log(`🌉 [DEBUG BRIDGE] ✅ MATCH FOUND:`, {
+              emailId: email.id,
+              threadId: email.threadId,
+              messageId: email.messageId,
+              currentIsRead: email.isRead,
+              newIsRead: data.isRead
+            });
 
-          console.log(`✅ Bridge: Found matching email: ${email.id}, current isRead: ${email.isRead}`);
-
-          if (typeof data.isRead === 'boolean') {
-            const updatedEmail = applyReadFlagAndLabels(email, data.isRead);
-            console.log(`🎨 BRIDGE COLOR FLIP - Email ${email.id}: ${email.isRead ? 'read' : 'unread'} → ${updatedEmail.isRead ? 'read' : 'unread'}`);
-            return updatedEmail;
+            if (typeof data.isRead === 'boolean') {
+              const updatedEmail = applyReadFlagAndLabels(email, data.isRead);
+              console.log(`🌉 [DEBUG BRIDGE] 🎨 BRIDGE COLOR FLIP - Email ${email.id}: ${email.isRead ? 'read' : 'unread'} → ${updatedEmail.isRead ? 'read' : 'unread'}`);
+              return updatedEmail;
+            }
           }
           return email;
         });
 
-        console.log('📝 Email list updated via Real-Time Bridge');
+        if (!foundMatch) {
+          console.warn(`🌉 [DEBUG BRIDGE] ❌ NO MATCH FOUND for ID: ${incomingId}`);
+        }
+
+        console.log('🌉 [DEBUG BRIDGE] 📝 Email list updated via Real-Time Bridge, match found:', foundMatch);
         return updatedEmails;
       });
 
-      if (typeof data.isRead === 'boolean') {
-        const delta = data.isRead ? -1 : 1;
-        setUnreadCount(prev => Math.max(0, prev + delta));
-        console.log(`📊 Unread count updated by ${delta}`);
-      }
+      // 🚀 LOCAL STATE APPROACH: Count updates automatically when email list changes!
     },
     // 2) New emails
     (data) => {
-      console.log('🌉 Real-Time Bridge NEW EMAIL received:', data);
+      console.log('🌉 [DEBUG BRIDGE] 📧 NEW EMAIL received:', JSON.stringify(data, null, 2));
 
       if (data.email) {
         const formattedEmail = formatEmailForDisplay(data.email)
-        console.log('📧 NEW EMAIL: Adding to top of list:', {
+        console.log('🌉 [DEBUG BRIDGE] 📧 NEW EMAIL: Adding to top of list:', {
           id: formattedEmail.id,
           subject: formattedEmail.subject?.substring(0, 50) + '...',
           from: formattedEmail.from,
@@ -690,32 +758,27 @@ export function useEmail() {
         });
 
         setEmails(prev => {
-          console.log('📧 BEFORE adding new email - total emails:', prev.length);
+          console.log('🌉 [DEBUG BRIDGE] 📧 BEFORE adding new email - total emails:', prev.length);
           const updated = [formattedEmail, ...prev];
-          console.log('📧 AFTER adding new email - total emails:', updated.length);
-          logEmailListState(updated, 'NEW_EMAIL_ADDED', formattedEmail.id);
+          console.log('🌉 [DEBUG BRIDGE] 📧 AFTER adding new email - total emails:', updated.length);
+          logEmailListState(updated, 'BRIDGE_NEW_EMAIL_ADDED', formattedEmail.id);
           return updated;
         });
 
         setTotal(prev => {
           const newTotal = prev + 1;
-          console.log('📊 Total count updated:', prev, '→', newTotal);
+          console.log('🌉 [DEBUG BRIDGE] 📊 Total count updated:', prev, '→', newTotal);
           return newTotal;
         });
 
-        if (!formattedEmail.isRead) {
-          setUnreadCount(prev => {
-            const newCount = prev + 1;
-            console.log('📊 Unread count updated:', prev, '→', newCount);
-            return newCount;
-          });
-        }
+        // 🚀 LOCAL STATE APPROACH: Unread count updates automatically when email list changes!
       } else {
-        console.warn('⚠️ New email received but no email data:', data);
+        console.warn('🌉 [DEBUG BRIDGE] ⚠️ New email received but no email data:', data);
       }
     },
     // 3) Deletions
     (data) => {
+      console.log('🌉 [DEBUG BRIDGE] 🗑️ EMAIL DELETION received:', data);
       setEmails(prev => prev.filter(email => !(
         email.id === data.emailId ||
         email.threadId === data.emailId ||
@@ -723,10 +786,12 @@ export function useEmail() {
         email.conversationId === data.emailId
       )))
       setTotal(prev => Math.max(0, prev - 1))
+      console.log('🌉 [DEBUG BRIDGE] 🗑️ ✅ Email deletion processed');
     },
-    // 4) 🔴 Live unread count from backend aggregation (authoritative)
+    // 4) 🚀 LOCAL STATE APPROACH: Ignore server count updates
     ({ count }) => {
-      if (typeof count === 'number') setUnreadCount(count)
+      console.log('🌉 [DEBUG BRIDGE] 📊 LIVE COUNT update received (ignoring - using local count):', count);
+      // Count is calculated from email list, so we ignore server counts!
     }
   )
 
@@ -780,7 +845,7 @@ export function useEmail() {
     selectedEmails,
     nextCursor,
     hasPrev: currentPage > 1,
-    unreadCount,
+    unreadCount, // 🚀 LOCAL STATE: Always accurate, no V2 complexity needed
     spamUnreadCount,
 
     // Actions
@@ -797,7 +862,9 @@ export function useEmail() {
 
     // Utilities
     setError: (error) => setError(error),
-    clearError: () => setError(null)
+    clearError: () => setError(null),
+
+    // 🚀 LOCAL STATE APPROACH: Simple and reliable!
   }
 }
 

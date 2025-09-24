@@ -236,3 +236,8 @@
     @apply max-w-full h-auto rounded;
   }
 
+  /* Unread email background color */
+  .unread-email-bg {
+    background-color: #f5efb3;
+  }
+

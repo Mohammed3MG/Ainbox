@@ -14,3 +14,8 @@ coverage/
 *.tmp
 tmp/
 certs/
+
+# Secret keys
+auth/*.json
+service-account-key.json
+

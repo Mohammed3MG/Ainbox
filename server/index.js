@@ -152,39 +152,33 @@ try {
 // });
 
 async function startHttp(app) {
-  const base = parseInt(process.env.HTTP_PORT || '3000', 10);
-  const maxTries = 10;
-  for (let i = 0; i < maxTries; i++) {
-    const port = base + i;
-    try {
-      const server = await new Promise((resolve, reject) => {
-        const srv = http.createServer(app);
-        srv.once('error', (err) => {
-          if (err && err.code === 'EADDRINUSE') {
-            console.warn(`HTTP port ${port} in use, trying ${port + 1}...`);
-            try { srv.close(); } catch (_) {}
-            reject(err);
-          } else {
-            reject(err);
-          }
-        });
-        srv.listen(port, () => {
-          console.log(`✅ HTTP server running at http://localhost:${port}`);
-          resolve(srv);
-        });
+  const port = parseInt(process.env.HTTP_PORT || '3000', 10);
+  try {
+    const server = await new Promise((resolve, reject) => {
+      const srv = http.createServer(app);
+      srv.once('error', (err) => {
+        if (err && err.code === 'EADDRINUSE') {
+          console.error(`❌ HTTP port ${port} is in use. Please free up port ${port} and restart the server.`);
+          process.exit(1);
+        } else {
+          reject(err);
+        }
       });
+      srv.listen(port, () => {
+        console.log(`✅ HTTP server running at http://localhost:${port}`);
+        resolve(srv);
+      });
+    });
 
       // Initialize Socket.IO with the HTTP server
       socketIOService.initialize(server);
       console.log(`🚀 Socket.IO initialized on HTTP server port ${port}`);
 
-      return server; // Return server instance
-    } catch (e) {
-      if (!(e && e.code === 'EADDRINUSE')) throw e;
-      // else try next port
-    }
+    return server; // Return server instance
+  } catch (e) {
+    console.error('❌ Failed to start HTTP server:', e.message);
+    process.exit(1);
   }
-  throw new Error(`No available HTTP ports from ${base} to ${base + maxTries - 1}`);
 }
 
 async function startHttps(app, ssl) {
@@ -228,6 +222,30 @@ async function startHttps(app, ssl) {
     // Run migrations
     await runMigrations();
     console.log('🛠️  DB migrations applied.');
+
+    // Initialize V2 Real-time Sync System
+    if (process.env.REALTIME_SYNC_V2 === 'true') {
+      console.log('🚀 Initializing Realtime Sync V2...');
+
+      try {
+        // Initialize Redis client
+        const redisClient = require('./lib/cache/redisClient');
+        await redisClient.connect();
+        console.log('✅ Redis client connected');
+
+        // Start Gmail reconciler
+        const gmailReconciler = require('./jobs/reconcileGmail');
+        gmailReconciler.start();
+        console.log('✅ Gmail reconciler started');
+
+        console.log('🎯 Realtime Sync V2 fully initialized');
+      } catch (error) {
+        console.error('❌ Failed to initialize V2 system:', error.message);
+        console.log('⚠️  Continuing with V1 system...');
+      }
+    } else {
+      console.log('📝 Realtime Sync V2 disabled, using V1 system');
+    }
 
     // Start servers
     await startHttp(app);
@@ -277,10 +295,34 @@ async function startHttps(app, ssl) {
 // Graceful shutdown handling
 process.on('SIGTERM', () => {
   console.log('🔄 SIGTERM received, shutting down gracefully...');
-  process.exit(0);
+  shutdownV2System().then(() => process.exit(0));
 });
 
 process.on('SIGINT', () => {
   console.log('🔄 SIGINT received, shutting down gracefully...');
-  process.exit(0);
+  shutdownV2System().then(() => process.exit(0));
 });
+
+async function shutdownV2System() {
+  if (process.env.REALTIME_SYNC_V2 === 'true') {
+    try {
+      console.log('🛑 Shutting down V2 system...');
+
+      // Stop Gmail reconciler
+      const gmailReconciler = require('./jobs/reconcileGmail');
+      gmailReconciler.stop();
+
+      // Stop Gmail event consistency manager
+      const gmailEventualConsistencyManager = require('./lib/gmailEventualConsistencyManager');
+      gmailEventualConsistencyManager.cleanup();
+
+      // Close Redis connection
+      const redisClient = require('./lib/cache/redisClient');
+      await redisClient.close();
+
+      console.log('✅ V2 system shutdown complete');
+    } catch (error) {
+      console.error('❌ Error during V2 shutdown:', error.message);
+    }
+  }
+}

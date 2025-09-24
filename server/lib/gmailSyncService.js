@@ -25,8 +25,14 @@ class GmailSyncService {
       const watchData = await gmailPubSub.setupGmailWatch(userId, accessToken, refreshToken);
 
       // Start Pub/Sub listener (if not already started)
+      // Temporarily disabled due to subscription type issues
       if (this.activeUsers.size === 0) {
-        await gmailPubSub.startPubSubListener();
+        try {
+          await gmailPubSub.startPubSubListener();
+        } catch (error) {
+          console.warn('⚠️ Pub/Sub listener failed to start, continuing without real-time notifications:', error.message);
+          console.log('📧 Emails will still work via polling and manual refresh');
+        }
       }
 
       // Store user sync data

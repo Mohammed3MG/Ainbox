@@ -2,7 +2,7 @@
 const { google } = require('googleapis');
 const { getGoogleOAuthClientFromCookies } = require('../utils/googleClient');
 const emailCache = require('./emailCache');
-const { broadcastToUser } = require('./sse');
+const unifiedBroadcast = require('./unifiedBroadcast');
 
 class GmailSyncService {
   constructor() {
@@ -104,14 +104,12 @@ class GmailSyncService {
           new: { unread: newStats.unread, total: newStats.total }
         });
 
-        // Update cache and broadcast via SSE
+        // Update cache and broadcast via unified service
         await require('./smartCache').set(cacheKey, newStats, 45_000);
-        broadcastToUser(userId, {
-          type: 'unread_count_updated',
+        unifiedBroadcast.countUpdated(userId, {
           unread: newStats.unread,
-          total: newStats.total,
-          source: 'external_change'
-        });
+          total: newStats.total
+        }, 'external_change');
 
         console.log(`📡 Broadcasted Gmail count update to user ${userId} (external change detected)`);
       }
@@ -188,28 +186,70 @@ class GmailSyncService {
 
       if (!lastHistoryId) {
         // First time - get current historyId and store it
-        const profile = await gmail.users.getProfile({ userId: 'me' });
-        this.historyIds.set(userId, profile.data.historyId);
-        console.log(`📝 Stored initial historyId for user ${userId}: ${profile.data.historyId}`);
-        return;
+        try {
+          const profile = await gmail.users.getProfile({ userId: 'me' });
+          this.historyIds.set(userId, profile.data.historyId);
+          console.log(`📝 Stored initial historyId for user ${userId}: ${profile.data.historyId}`);
+          return;
+        } catch (profileError) {
+          console.error(`❌ Failed to get Gmail profile for user ${userId}:`, profileError.message);
+          return;
+        }
       }
 
       // Get history changes since last check
-      const historyResponse = await gmail.users.history.list({
-        userId: 'me',
-        startHistoryId: lastHistoryId,
-        labelId: 'INBOX',
-        historyTypes: ['messageAdded', 'messageDeleted', 'labelAdded', 'labelRemoved']
-      });
+      let historyResponse;
+      try {
+        historyResponse = await gmail.users.history.list({
+          userId: 'me',
+          startHistoryId: lastHistoryId,
+          labelId: 'INBOX',
+          historyTypes: ['messageAdded', 'messageDeleted', 'labelAdded', 'labelRemoved']
+        });
+      } catch (historyError) {
+        // Handle specific Gmail History API errors
+        if (historyError.code === 404 || historyError.message?.includes('history not found')) {
+          console.warn(`⚠️ History ID ${lastHistoryId} not found for user ${userId} - resetting history tracking`);
+          // Clear the invalid historyId and restart from current
+          this.historyIds.delete(userId);
+          try {
+            const profile = await gmail.users.getProfile({ userId: 'me' });
+            this.historyIds.set(userId, profile.data.historyId);
+            console.log(`🔄 Reset historyId for user ${userId} to: ${profile.data.historyId}`);
+          } catch (resetError) {
+            console.error(`❌ Failed to reset historyId for user ${userId}:`, resetError.message);
+          }
+          return;
+        } else if (historyError.code === 400 && historyError.message?.includes('invalid history ID')) {
+          console.warn(`⚠️ Invalid history ID format for user ${userId} - resetting`);
+          this.historyIds.delete(userId);
+          return;
+        } else if (historyError.code === 403 || historyError.message?.includes('insufficient permissions')) {
+          console.error(`🚫 Insufficient permissions for Gmail History API for user ${userId}`);
+          // Stop sync for this user since they don't have the required permissions
+          this.stopSyncForUser(userId);
+          return;
+        } else if (historyError.code === 429 || historyError.message?.includes('quota exceeded')) {
+          console.warn(`⏰ Gmail API quota exceeded for user ${userId} - will retry later`);
+          return;
+        } else {
+          throw historyError; // Re-throw unknown errors
+        }
+      }
 
       const history = historyResponse.data.history || [];
       if (history.length === 0) return;
 
       console.log(`📧 Found ${history.length} history changes for user ${userId}`);
 
-      // Process each history record
+      // Process each history record with error handling
       for (const record of history) {
-        await this.processHistoryRecord(userId, gmail, record);
+        try {
+          await this.processHistoryRecord(userId, gmail, record);
+        } catch (recordError) {
+          console.error(`❌ Failed to process history record for user ${userId}:`, recordError.message);
+          // Continue processing other records even if one fails
+        }
       }
 
       // Update stored historyId
@@ -218,7 +258,18 @@ class GmailSyncService {
       }
 
     } catch (error) {
-      console.error(`❌ Failed to check email history for user ${userId}:`, error.message);
+      console.error(`❌ Failed to check email history for user ${userId}:`, {
+        error: error.message,
+        code: error.code,
+        status: error.status,
+        userId: userId
+      });
+
+      // If it's a persistent auth error, stop sync for this user
+      if (error.code === 401 || error.message?.includes('unauthorized') || error.message?.includes('invalid_grant')) {
+        console.warn(`🔐 Authentication error for user ${userId} - stopping sync`);
+        this.stopSyncForUser(userId);
+      }
     }
   }
 
@@ -263,7 +314,7 @@ class GmailSyncService {
 
   // Check if message is in inbox/primary
   isInboxPrimary(labelIds = []) {
-    return labelIds.includes('INBOX') && labelIds.includes('CATEGORY_PERSONAL');
+    return labelIds.includes('INBOX') && labelIds.includes('CATEGORY_PRIMARY');
   }
 
   // Check if this is a read/unread status change
@@ -282,7 +333,7 @@ class GmailSyncService {
       });
 
       const email = this.formatEmailFromGmail(message.data);
-      broadcastToUser(userId, { type: 'new_email', email });
+      unifiedBroadcast.newEmail(userId, email);
 
       console.log(`📡 Broadcasted new email arrival for ${messageId}: "${email.subject}"`);
     } catch (error) {
@@ -299,11 +350,11 @@ class GmailSyncService {
         threadId = msg?.data?.threadId || null;
       } catch (_) {}
 
-      broadcastToUser(userId, {
-        type: 'email_deleted',
-        emailId: threadId || messageId,
-        source: 'external_deletion',
-        timestamp: Date.now()
+      unifiedBroadcast.emailDeleted(userId, {
+        id: threadId || messageId,
+        threadId: threadId,
+        reason: 'external_deletion',
+        source: 'external_deletion'
       });
     } catch (error) {
       console.error(`❌ Failed to broadcast email deletion:`, error.message);
@@ -344,9 +395,10 @@ class GmailSyncService {
         }
       }
 
-      broadcastToUser(userId, {
-        type: 'email_updated',
-        email: { id: message.data.threadId, threadId: message.data.threadId, isRead },
+      unifiedBroadcast.emailUpdated(userId, {
+        id: message.data.threadId,
+        threadId: message.data.threadId,
+        isRead: isRead,
         source: 'external_change'
       });
 
@@ -374,12 +426,13 @@ class GmailSyncService {
     const labels = [];
     if (message.labelIds?.includes('CATEGORY_PROMOTIONS')) labels.push('marketing');
     if (message.labelIds?.includes('CATEGORY_UPDATES')) labels.push('updates');
-    if (message.labelIds?.includes('CATEGORY_PERSONAL')) labels.push('personal');
+    if (message.labelIds?.includes('CATEGORY_PRIMARY')) labels.push('primary');
 
     // Check for attachments
     const hasAttachment = this.checkForAttachments(message.payload);
 
     return {
+      // Standardize: always use threadId as the main id for consistent frontend matching
       id: message.threadId,
       threadId: message.threadId,
       messageId: message.id,

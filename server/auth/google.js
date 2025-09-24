@@ -5,6 +5,7 @@ const bcrypt = require('bcrypt');
 const { v4: uuidv4 } = require('uuid');
 const { query } = require('../lib/db');
 const { signAccessToken, signRefreshToken, msFromExp, cookieOpts } = require('../lib/tokens');
+const gmailSyncService = require('../lib/gmailSyncService');
 
 function configureGoogleStrategy(passportInstance) {
   passportInstance.use(new GoogleStrategy({
@@ -98,7 +99,7 @@ router.get('/google/callback',
              ON CONFLICT (user_id, provider) DO UPDATE SET
                provider_account_id = EXCLUDED.provider_account_id,
                email = EXCLUDED.email,
-               refresh_token_encrypted = COALESCE(EXCLUDED.refresh_token_encrypted, accounts.refresh_token_encrypted),
+               refresh_token_encrypted = EXCLUDED.refresh_token_encrypted,
                scopes = COALESCE(EXCLUDED.scopes, accounts.scopes),
                updated_at = NOW()`,
             [uuidv4(), user.id, 'google', user.google_id, user.email, enc, 'gmail.readonly gmail.send gmail.modify openid profile email']
@@ -107,6 +108,19 @@ router.get('/google/callback',
           console.error('Failed to persist Google refresh token:', e.message);
         }
         res.cookie('google_refresh_token', user.googleRefreshToken, cookieOpts(msFromExp('30d')));
+      }
+
+      // Auto-start enhanced Gmail Pub/Sub sync for this user after successful authentication
+      const userId = String(user.id);
+      const syncStatus = gmailSyncService.getSyncStatus(userId);
+      if (!syncStatus.active && user.googleAccessToken && user.googleRefreshToken) {
+        console.log(`🚀 Auto-starting enhanced Gmail Pub/Sub sync for newly authenticated user ${userId}`);
+        gmailSyncService.startSync(userId, user.googleAccessToken, user.googleRefreshToken, user.email).catch(err => {
+          console.error(`❌ Failed to auto-start enhanced Gmail sync for user ${userId}:`, err.message);
+          console.log(`📊 Enhanced Gmail sync failed but continuing without old fallback (EventualConsistency Manager still active)`);
+          // DISABLED: No longer falling back to old basic sync as it conflicts with EventualConsistency Manager
+          // The enhanced sync will continue to work for count corrections even if Pub/Sub fails
+        });
       }
 
       const base = process.env.FRONTEND_BASE_URL || '';
