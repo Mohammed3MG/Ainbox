@@ -209,25 +209,36 @@ class SocketIOService {
     const userIdStr = String(userId);
     const userSocketIds = this.userSockets.get(userIdStr);
 
+    console.log(`📡 [BROADCAST DEBUG] Attempting to broadcast ${event} to user ${userIdStr}`);
+    console.log(`📡 [BROADCAST DEBUG] Total connected users:`, this.userSockets.size);
+    console.log(`📡 [BROADCAST DEBUG] All user IDs:`, Array.from(this.userSockets.keys()));
+
     if (!userSocketIds || userSocketIds.size === 0) {
-      console.log(`📡 No sockets found for user ${userIdStr}`);
+      console.log(`📡 [BROADCAST DEBUG] No sockets found for user ${userIdStr}`);
+      console.log(`📡 [BROADCAST DEBUG] userSockets map:`, Object.fromEntries(this.userSockets));
       return 0;
     }
+
+    console.log(`📡 [BROADCAST DEBUG] Found ${userSocketIds.size} sockets for user ${userIdStr}:`, Array.from(userSocketIds));
 
     let broadcastCount = 0;
     for (const socketId of userSocketIds) {
       if (excludeSocketId && socketId === excludeSocketId) {
+        console.log(`📡 [BROADCAST DEBUG] Skipping excluded socket ${socketId}`);
         continue; // Skip the sender socket
       }
 
       const socket = this.io.sockets.sockets.get(socketId);
       if (socket) {
+        console.log(`📡 [BROADCAST DEBUG] Emitting ${event} to socket ${socketId}`);
         socket.emit(event, data);
         broadcastCount++;
+      } else {
+        console.log(`📡 [BROADCAST DEBUG] Socket ${socketId} not found in io.sockets.sockets`);
       }
     }
 
-    console.log(`📡 Broadcasted ${event} to ${broadcastCount} sockets for user ${userIdStr}`);
+    console.log(`📡 [BROADCAST DEBUG] Broadcasted ${event} to ${broadcastCount} sockets for user ${userIdStr}`);
     return broadcastCount;
   }
 
@@ -249,12 +260,18 @@ class SocketIOService {
 
   // Send new email notification
   newEmail(userId, emailData) {
-    this.broadcastToUser(userId, 'new_email', {
+    console.log(`🚨 [SOCKET DEBUG] newEmail called for user ${userId}`);
+    console.log(`🚨 [SOCKET DEBUG] Email data:`, JSON.stringify(emailData, null, 2));
+    console.log(`🚨 [SOCKET DEBUG] User sockets available:`, this.userSockets.has(String(userId)) ? this.userSockets.get(String(userId)).size : 0);
+
+    const broadcastCount = this.broadcastToUser(userId, 'new_email', {
       type: 'new_email',
       email: emailData,
       timestamp: Date.now(),
       source: 'external_arrival'
     });
+
+    console.log(`🚨 [SOCKET DEBUG] Broadcasted new_email to ${broadcastCount} sockets`);
   }
 
   // Send count update notification

@@ -105,10 +105,16 @@ class SocketIOService {
 
     // New email events
     this.socket.on('new_email', (data) => {
-      console.log('🚨 [SOCKET] Raw new_email event received:', data);
-      console.log('🚨 [SOCKET] Event data type:', typeof data);
-      console.log('🚨 [SOCKET] Event data.email:', data.email);
-      console.log('🚨 [SOCKET] Has listeners for newEmail:', this.listeners.has('newEmail'));
+      console.log('\n' + '='.repeat(60));
+      console.log('🚨 [SOCKET TRACE] NEW EMAIL EVENT RECEIVED');
+      console.log('='.repeat(60));
+      console.log('🚨 [SOCKET TRACE] Raw new_email event received:', JSON.stringify(data, null, 2));
+      console.log('🚨 [SOCKET TRACE] Event data type:', typeof data);
+      console.log('🚨 [SOCKET TRACE] Event data.email:', data.email);
+      console.log('🚨 [SOCKET TRACE] Event timestamp:', data.timestamp);
+      console.log('🚨 [SOCKET TRACE] Event source:', data.source);
+      console.log('🚨 [SOCKET TRACE] Has listeners for newEmail:', this.listeners.has('newEmail'));
+      console.log('🚨 [SOCKET TRACE] Number of listeners:', this.listeners.get('newEmail')?.size || 0);
 
       this.notifyListeners('newEmail', {
         email: data.email,
@@ -116,7 +122,8 @@ class SocketIOService {
         source: data.source
       });
 
-      console.log('🚨 [SOCKET] Notified listeners for newEmail event');
+      console.log('🚨 [SOCKET TRACE] ✅ Notified listeners for newEmail event');
+      console.log('='.repeat(60) + '\n');
     });
 
     // Email deletion events

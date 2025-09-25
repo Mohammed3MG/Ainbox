@@ -8,7 +8,9 @@ import {
   Trash2,
   Clock,
   ChevronLeft,
-  ChevronRight
+  ChevronRight,
+  Mail,
+  MailOpen
 } from 'lucide-react'
 import { cn } from '../../lib/utils'
 import { Badge } from '../ui/badge'
@@ -58,6 +60,19 @@ export default function EmailList({
   const pageSize = 50
   const rangeStart = (currentPage - 1) * pageSize + 1
   const rangeEnd = rangeStart + Math.max(0, filteredEmails.length - 1)
+
+  // Smart action logic: prioritize unread emails
+  const selectedEmailObjects = useMemo(() => {
+    return filteredEmails.filter(email => selectedEmails.has(email.id))
+  }, [filteredEmails, selectedEmails])
+
+  const hasUnreadSelected = selectedEmailObjects.some(email => !email.isRead)
+  const hasReadSelected = selectedEmailObjects.some(email => email.isRead)
+
+  // Priority logic: if ANY unread emails are selected, show "mark as read" action
+  const primaryReadAction = hasUnreadSelected ? 'read' : 'unread'
+  const ReadActionIcon = hasUnreadSelected ? MailOpen : Mail
+  const readActionText = hasUnreadSelected ? 'Mark as read' : 'Mark as unread'
 
   const handleSelectAll = () => {
     if (selectAll) {
@@ -151,38 +166,67 @@ export default function EmailList({
       {/* Email list controls */}
       <div className="flex-shrink-0 border-b border-gray-200 px-4 py-3">
         <div className="flex items-center justify-between gap-4">
-          <label className="flex items-center gap-2 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={selectAll}
-              onChange={handleSelectAll}
-              className="rounded border-gray-300 cursor-pointer"
-            />
-            <span className="text-sm text-gray-600">Select all</span>
-          </label>
+          {/* Beautiful select all checkbox */}
+          <div className="flex items-center gap-3">
+            <label className="flex items-center gap-2 cursor-pointer group">
+              <div className="relative">
+                <input
+                  type="checkbox"
+                  checked={selectAll}
+                  onChange={handleSelectAll}
+                  className="w-4 h-4 text-blue-600 bg-white border-2 border-gray-300 rounded focus:ring-blue-500 focus:ring-2 transition-all duration-200 cursor-pointer group-hover:border-blue-400"
+                />
+              </div>
+              <span className="text-sm text-gray-600 font-medium">Select all</span>
+            </label>
 
-          <div className="flex items-center gap-3 ml-4 flex-1">
             {selectedEmails.size > 0 && (
-              <div className="flex items-center gap-2">
+              <span className="text-xs text-blue-600 bg-blue-50 px-2 py-1 rounded-full font-medium">
+                {selectedEmails.size} selected
+              </span>
+            )}
+          </div>
+
+          {/* Action toolbar - only visible when emails are selected */}
+          <div className="flex items-center gap-3 flex-1">
+            {selectedEmails.size > 0 && (
+              <div className="flex items-center gap-1 ml-4">
+                {/* Smart read/unread action button */}
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => onEmailAction(primaryReadAction, Array.from(selectedEmails))}
+                  className="hover:bg-blue-50 hover:text-blue-700"
+                  title={readActionText}
+                >
+                  <ReadActionIcon className="w-4 h-4" />
+                </Button>
+
+                {/* Archive button */}
                 <Button
                   variant="ghost"
                   size="sm"
                   onClick={() => onEmailAction('archive', Array.from(selectedEmails))}
+                  className="hover:bg-green-50 hover:text-green-700"
+                  title="Archive"
                 >
-                  <Archive className="w-4 h-4 mr-1" />
-                  Archive
+                  <Archive className="w-4 h-4" />
                 </Button>
+
+                {/* Delete button */}
                 <Button
                   variant="ghost"
                   size="sm"
                   onClick={() => onEmailAction('delete', Array.from(selectedEmails))}
+                  className="hover:bg-red-50 hover:text-red-700"
+                  title="Delete"
                 >
-                  <Trash2 className="w-4 h-4 mr-1" />
-                  Delete
+                  <Trash2 className="w-4 h-4" />
                 </Button>
               </div>
             )}
 
+            {/* Pagination controls */}
             <div className="ml-auto flex items-center gap-3 text-sm text-gray-600">
               <span className="tabular-nums">
                 {`${rangeStart}–${rangeEnd}${typeof total === 'number' ? ` of ${total}` : ''}`}
@@ -274,16 +318,21 @@ export default function EmailList({
                 data-read-status={email.isRead ? 'read' : 'unread'}
                 onClick={() => onEmailSelect(email.id)}
               >
-                {/* Checkbox */}
-                <input
-                  type="checkbox"
-                  checked={selectedEmails.has(email.id)}
-                  onChange={(e) => {
+                {/* Beautiful checkbox */}
+                <div
+                  className="relative flex items-center justify-center cursor-pointer group"
+                  onClick={(e) => {
                     e.stopPropagation()
                     handleEmailSelect(email.id)
                   }}
-                  className="rounded border-gray-300"
-                />
+                >
+                  <input
+                    type="checkbox"
+                    checked={selectedEmails.has(email.id)}
+                    onChange={() => {}}
+                    className="w-4 h-4 text-blue-600 bg-white border-2 border-gray-300 rounded focus:ring-blue-500 focus:ring-2 transition-all duration-200 cursor-pointer group-hover:border-blue-400"
+                  />
+                </div>
 
                 {/* Star */}
                 <button

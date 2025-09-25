@@ -618,10 +618,106 @@ async performImmediateUpdate(userId) {
       const changes = await this.processGmailHistory(userId, historyId);
       console.log(`📨 [DEBUG V2] 📜 processGmailHistory returned ${changes.length} changes:`, changes);
 
-      // Broadcast immediate per-message read/unread updates for UI row styling (V2 parity with V1)
+      // Broadcast immediate per-message updates for UI (V2 parity with V1)
       try {
         for (const change of changes) {
-          if (change.type === 'read_status') {
+          if (change.type === 'message_added') {
+            console.log(`📨 [DEBUG V2] 🚨 Broadcasting newEmail event for message ${change.messageId}...`);
+
+            // Fetch full message details for the frontend
+            try {
+              const gmailApiHelpers = require('./gmail');
+              const fullMessage = await gmailApiHelpers.getMessage(userId, change.messageId, 'full');
+              const emailData = fullMessage.data;
+
+              // Extract key fields from Gmail API headers
+              const headers = emailData.payload?.headers || [];
+              const getHeader = (name) => headers.find(h => h.name === name)?.value || '';
+
+              const subject = getHeader('Subject');
+              const from = getHeader('From');
+              const to = getHeader('To');
+              const date = getHeader('Date');
+
+              // Extract preview text from body parts
+              let preview = '';
+              if (emailData.payload?.parts) {
+                const textPart = emailData.payload.parts.find(part =>
+                  part.mimeType === 'text/plain' && part.body?.data
+                );
+                if (textPart && textPart.body.data) {
+                  try {
+                    preview = Buffer.from(textPart.body.data, 'base64').toString('utf8')
+                      .replace(/\r?\n/g, ' ').trim().substring(0, 150);
+                  } catch (e) {
+                    console.warn('Failed to decode email preview:', e);
+                  }
+                }
+              }
+
+              console.log(`📨 [DEBUG V2] 🚨 Got full email data for broadcast:`, {
+                id: emailData.id,
+                threadId: emailData.threadId,
+                subject,
+                from,
+                preview: preview.substring(0, 50) + '...'
+              });
+
+              // Helper function to format time like frontend
+              const formatTimeFromDate = (dateString) => {
+                if (!dateString) return '';
+                try {
+                  const date = new Date(dateString);
+                  const now = new Date();
+                  const diff = now - date;
+                  const hours = diff / (1000 * 60 * 60);
+                  const days = diff / (1000 * 60 * 60 * 24);
+                  if (hours < 1) {
+                    return 'Just now';
+                  } else if (hours < 24) {
+                    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                  } else if (days < 7) {
+                    return date.toLocaleDateString([], { weekday: 'short' });
+                  } else {
+                    return date.toLocaleDateString([], { month: 'short', day: 'numeric' });
+                  }
+                } catch {
+                  return '';
+                }
+              };
+
+              // Format the email data to match frontend expectations
+              const emailDate = date ? new Date(date).toISOString() : new Date().toISOString();
+              const formattedEmailData = {
+                id: emailData.id,
+                messageId: emailData.id,
+                threadId: emailData.threadId,
+                subject: subject || '(no subject)',
+                from: from || 'Unknown Sender',
+                to: to || '',
+                preview: preview || '(no preview)',
+                date: emailDate,
+                time: formatTimeFromDate(date || new Date().toISOString()),
+                isRead: !change.isUnread,
+                isUnread: change.isUnread,
+                labelIds: emailData.labelIds || [],
+                labels: emailData.labelIds || [],
+                internalDate: emailData.internalDate,
+                hasAttachment: emailData.payload?.parts?.some(part =>
+                  part.filename && part.filename.length > 0
+                ) || false,
+                source: 'webhook_new_email',
+                timestamp: new Date().toISOString()
+              };
+
+              // Broadcast new email event with properly formatted data
+              unifiedBroadcast.newEmail(userId, formattedEmailData);
+
+              console.log(`📨 [DEBUG V2] 🚨 ✅ Successfully broadcasted newEmail event for ${change.messageId}`);
+            } catch (emailFetchError) {
+              console.error(`📨 [DEBUG V2] ❌ Failed to fetch full email data for ${change.messageId}:`, emailFetchError.message);
+            }
+          } else if (change.type === 'read_status') {
             const isRead = !!change.isRead;
             const payload = {
               id: change.threadId || change.messageId, // prefer threadId so frontend can match reliably
@@ -669,7 +765,11 @@ async performImmediateUpdate(userId) {
           if (!threadChanges.has(threadId)) {
             threadChanges.set(threadId, { type: 'read_status', threadId, changes: [] });
           }
-          threadChanges.get(threadId).changes.push(change);
+          const threadChange = threadChanges.get(threadId);
+          if (!threadChange.changes) {
+            threadChange.changes = [];
+          }
+          threadChange.changes.push(change);
         } else if (change.type === 'message_added') {
           // For new messages, only count once per thread
           if (!threadChanges.has(threadId)) {
@@ -833,8 +933,15 @@ async performImmediateUpdate(userId) {
       console.log(`📜 [DEBUG HISTORY] Last history ID from cache: ${lastHistoryId}`);
 
       if (!lastHistoryId) {
-        console.log(`📜 [DEBUG HISTORY] ❌ No last history ID found, skipping history processing`);
-        return [];
+        console.log(`📜 [DEBUG HISTORY] ❌ No last history ID found, initializing with current Gmail state`);
+        const currentHistoryId = await this.initializeHistoryId(userId);
+        if (currentHistoryId) {
+          console.log(`📜 [DEBUG HISTORY] ✅ Initialized history ID: ${currentHistoryId}`);
+          return []; // Skip processing for this webhook, we'll catch the next one
+        } else {
+          console.log(`📜 [DEBUG HISTORY] ❌ Failed to initialize history ID, skipping`);
+          return [];
+        }
       }
 
       // Fetch history changes from Gmail API
@@ -858,11 +965,81 @@ async performImmediateUpdate(userId) {
 
       const changes = [];
 
+      // Track processed messages to avoid duplicates (Gmail returns same message in both messages[] and messagesAdded[])
+      const processedMessages = new Set();
+
+      // FIRST PASS: Process all messagesAdded[] across all records to mark them as processed
+      console.log(`📜 [DEBUG HISTORY] 🚀 FIRST PASS: Processing all messagesAdded[] to prevent duplicates`);
+      for (let i = 0; i < history.length; i++) {
+        const record = history[i];
+        if (record.messagesAdded) {
+          for (const addedMsg of record.messagesAdded) {
+            const message = addedMsg.message;
+            if (message?.id) {
+              processedMessages.add(message.id);
+              console.log(`📜 [DEBUG HISTORY] ✅ Pre-marked message ${message.id} as processed (from messagesAdded)`);
+            }
+          }
+        }
+      }
+
       for (let i = 0; i < history.length; i++) {
         const record = history[i];
         console.log(`📜 [DEBUG HISTORY] 📄 Processing history record ${i + 1}/${history.length}:`, record);
 
-        // Process message additions (new emails)
+        // Process general messages (need to fetch full details to get labelIds)
+        // NOTE: Skip any message already processed in messagesAdded[] to avoid duplicates
+        if (record.messages && record.messages.length > 0) {
+          console.log(`📜 [DEBUG HISTORY] 📨 Processing ${record.messages.length} messages in history record...`);
+
+          for (let j = 0; j < record.messages.length; j++) {
+            const basicMessage = record.messages[j];
+            console.log(`📜 [DEBUG HISTORY] Message ${j + 1}: messageId=${basicMessage.id}, threadId=${basicMessage.threadId}`);
+
+            // Skip if already processed (prevents duplicates from messagesAdded[])
+            if (processedMessages.has(basicMessage.id)) {
+              console.log(`📜 [DEBUG HISTORY] ⚪ Skipping message ${basicMessage.id} - already processed`);
+              continue;
+            }
+
+            try {
+              // Fetch full message details to get labelIds
+              console.log(`📜 [DEBUG HISTORY] 🔍 Fetching full details for message ${basicMessage.id}...`);
+              const fullMessage = await gmailApiHelpers.getMessage(userId, basicMessage.id, 'metadata');
+              const message = fullMessage.data;
+              console.log(`📜 [DEBUG HISTORY] ✅ Got full message details: labelIds=${message?.labelIds}`);
+
+              if (message && this.isInboxPrimary(message.labelIds)) {
+                const isUnread = message.labelIds?.includes('UNREAD');
+                console.log(`📜 [DEBUG HISTORY] ✅ Message ${message.id} is inbox/primary, isUnread: ${isUnread}`);
+
+                // Mark as processed
+                processedMessages.add(message.id);
+
+                changes.push({
+                  type: 'message_added',
+                  messageId: message.id,
+                  threadId: message.threadId,
+                  isUnread: isUnread,
+                  historyId: record.id
+                });
+
+                // Store in database
+                console.log(`📜 [DEBUG HISTORY] 💾 Storing message in database...`);
+                await this.storeMessageInDatabase(userId, message);
+                console.log(`📜 [DEBUG HISTORY] 💾 ✅ Message stored successfully`);
+
+                console.log(`📨 [DEBUG HISTORY] ✅ New message added: ${message.id}, unread: ${isUnread}`);
+              } else {
+                console.log(`📜 [DEBUG HISTORY] ⚪ Skipping message ${message?.id} - not inbox/primary or invalid (labels: ${message?.labelIds})`);
+              }
+            } catch (error) {
+              console.error(`📜 [DEBUG HISTORY] ❌ Failed to fetch message ${basicMessage.id}:`, error.message);
+            }
+          }
+        }
+
+        // Process message additions (new emails) - original format
         if (record.messagesAdded) {
           console.log(`📜 [DEBUG HISTORY] 📨 Processing ${record.messagesAdded.length} message additions...`);
 
@@ -871,9 +1048,18 @@ async performImmediateUpdate(userId) {
             const message = addedMsg.message;
             console.log(`📜 [DEBUG HISTORY] Message addition ${j + 1}: message=${message ? message.id : 'null'}, labelIds=${message?.labelIds}`);
 
+            // Skip if already processed (prevents duplicates from messages[])
+            if (processedMessages.has(message?.id)) {
+              console.log(`📜 [DEBUG HISTORY] ⚪ Skipping message ${message?.id} - already processed`);
+              continue;
+            }
+
             if (message && this.isInboxPrimary(message.labelIds)) {
               const isUnread = message.labelIds?.includes('UNREAD');
               console.log(`📜 [DEBUG HISTORY] ✅ Message ${message.id} is inbox/primary, isUnread: ${isUnread}`);
+
+              // Mark as processed
+              processedMessages.add(message.id);
 
               changes.push({
                 type: 'message_added',
@@ -992,9 +1178,13 @@ async performImmediateUpdate(userId) {
       console.error(`❌ [DEBUG HISTORY] 💥 ERROR in processGmailHistory:`, error);
       console.error(`❌ [DEBUG HISTORY] Error stack:`, error.stack);
 
-      // If history is expired/invalid, return empty array but don't fail
+      // If history is expired/invalid, reinitialize history ID
       if (error.code === 404 || error.message?.includes('history')) {
-        console.log(`⚠️ [DEBUG HISTORY] ❌ History expired or invalid, skipping processing`);
+        console.log(`⚠️ [DEBUG HISTORY] ❌ History expired or invalid, reinitializing with current Gmail state`);
+        const currentHistoryId = await this.initializeHistoryId(userId);
+        if (currentHistoryId) {
+          console.log(`📜 [DEBUG HISTORY] ✅ Reinitialized history ID: ${currentHistoryId}`);
+        }
         return [];
       }
 
@@ -1006,9 +1196,11 @@ async performImmediateUpdate(userId) {
 
   /**
    * Check if message is in inbox/primary category
+   * FIXED: Accept both CATEGORY_PRIMARY and CATEGORY_PERSONAL as valid primary inbox emails
    */
   isInboxPrimary(labelIds = []) {
-    return labelIds.includes('INBOX') && labelIds.includes('CATEGORY_PRIMARY');
+    return labelIds.includes('INBOX') &&
+           (labelIds.includes('CATEGORY_PRIMARY') || labelIds.includes('CATEGORY_PERSONAL'));
   }
 
   /**
@@ -1101,6 +1293,41 @@ async performImmediateUpdate(userId) {
 
     } catch (error) {
       console.error(`❌ [EventualConsistency V2] Error initializing user cache:`, error);
+    }
+  }
+
+  /**
+   * Initialize history ID by fetching current Gmail profile
+   */
+  async initializeHistoryId(userId) {
+    try {
+      console.log(`📜 [INIT HISTORY] 🚀 Initializing history ID for user ${userId}`);
+
+      // Load Gmail API helpers
+      const gmailApiHelpers = require('./gmail');
+
+      // Fetch current Gmail profile to get latest history ID
+      console.log(`📜 [INIT HISTORY] Fetching Gmail profile...`);
+      const profileResponse = await gmailApiHelpers.getUserProfile(userId);
+      const currentHistoryId = profileResponse.data.historyId;
+
+      console.log(`📜 [INIT HISTORY] Current Gmail history ID: ${currentHistoryId}`);
+
+      // Save this as the starting point for future history tracking
+      const mailboxCache = require('./cache/mailboxCache');
+      await mailboxCache.setLastHistoryId(userId, currentHistoryId);
+
+      console.log(`📜 [INIT HISTORY] ✅ Saved history ID ${currentHistoryId} for user ${userId}`);
+      return currentHistoryId;
+
+    } catch (error) {
+      console.error(`❌ [INIT HISTORY] Failed to initialize history ID for user ${userId}:`, error.message);
+      console.error(`❌ [INIT HISTORY] Error details:`, {
+        code: error.code,
+        status: error.status,
+        stack: error.stack
+      });
+      return null;
     }
   }
 

@@ -576,20 +576,116 @@ export async function unstarEmail(emailIds) {
 
 export async function archiveEmails(emailIds) {
   console.log('Archive emails:', emailIds)
-  // Would need Gmail API endpoint: /gmail/messages/modify with removeLabelIds: ['INBOX']
-  return { success: true }
+
+  if (!emailIds || emailIds.length === 0) {
+    return { success: false, error: 'No email IDs provided' }
+  }
+
+  try {
+    // Use the Gmail archive endpoint to remove INBOX label
+    const response = await apiFetch('/gmail/archive', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: {
+        ids: emailIds
+      }
+    })
+
+    console.log('Archive emails response:', response)
+    return {
+      success: true,
+      archived: emailIds.length,
+      ...response
+    }
+  } catch (error) {
+    console.error('Failed to archive emails:', error)
+    return {
+      success: false,
+      error: error.message || 'Failed to archive emails'
+    }
+  }
 }
 
 export async function deleteEmails(emailIds) {
-  console.log('Delete emails:', emailIds)
-  // Would need Gmail API endpoint: /gmail/messages/trash
-  return { success: true }
+  console.log('🗑️ [Frontend] Delete emails called with:', emailIds)
+  console.log('🗑️ [Frontend] emailIds type:', typeof emailIds, 'isArray:', Array.isArray(emailIds))
+
+  if (!emailIds || emailIds.length === 0) {
+    console.log('❌ [Frontend] No email IDs provided')
+    return { success: false, error: 'No email IDs provided' }
+  }
+
+  const requestBody = { ids: emailIds };
+  console.log('🗑️ [Frontend] Request body to send:', requestBody);
+
+  try {
+    // Use the Gmail trash endpoint to delete emails
+    const response = await apiFetch('/gmail/trash', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: requestBody
+    })
+
+    console.log('Delete emails response:', response)
+    return {
+      success: true,
+      deleted: emailIds.length,
+      ...response
+    }
+  } catch (error) {
+    console.error('Failed to delete emails:', error)
+    return {
+      success: false,
+      error: error.message || 'Failed to delete emails'
+    }
+  }
 }
 
 export async function moveEmails(emailIds, folder) {
   console.log('Move emails to folder:', emailIds, folder)
   // Would need Gmail API endpoint: /gmail/messages/modify with appropriate label changes
   return { success: true }
+}
+
+export async function deleteEmailsPermanently(emailIds) {
+  console.log('💀 [Frontend] Permanent delete request for emails:', emailIds);
+
+  if (!emailIds || emailIds.length === 0) {
+    console.log('❌ [Frontend] No email IDs provided for permanent deletion')
+    return { success: false, error: 'No email IDs provided' }
+  }
+
+  const requestBody = { ids: emailIds };
+  console.log('💀 [Frontend] Request body to send:', requestBody);
+
+  try {
+    // Use the Gmail permanent delete endpoint to permanently delete emails
+    const response = await apiFetch('/gmail/delete-permanently', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: requestBody
+    })
+
+    console.log('Permanent delete emails response:', response)
+    return {
+      success: true,
+      deleted: emailIds.length,
+      permanent: true,
+      ...response
+    }
+  } catch (error) {
+    console.error('Failed to permanently delete emails:', error)
+    return {
+      success: false,
+      error: error.message || 'Failed to permanently delete emails'
+    }
+  }
 }
 
 // Compose and send

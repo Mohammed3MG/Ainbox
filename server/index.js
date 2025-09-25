@@ -52,6 +52,18 @@ app.use(cors({
 app.use(express.json({ limit: '35mb' }));
 app.use(cookieParser());
 
+// Global request logging for debugging delete operations
+app.use((req, res, next) => {
+  if (req.path.includes('trash') || req.path.includes('delete')) {
+    console.log(`🌐 [Global] ${req.method} ${req.path}`, {
+      body: req.body,
+      contentType: req.get('content-type'),
+      userAgent: req.get('user-agent')
+    });
+  }
+  next();
+});
+
 // Disable HTTP caching globally to ensure realtime freshness for dynamic endpoints
 app.use((req, res, next) => {
   res.set('Cache-Control', 'no-store');

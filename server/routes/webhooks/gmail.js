@@ -53,13 +53,26 @@ router.post('/gmail/notifications', express.json(), async (req, res) => {
     // Process asynchronously without blocking webhook ACK
     setImmediate(async () => {
       try {
-        console.log(`🔍 [DEBUG] Looking up user for email: ${emailAddress}`);
+        console.log('\n' + '🔍'.repeat(60));
+        console.log('🔍 [WEBHOOK TRACE] USER LOOKUP PROCESS');
+        console.log('🔍'.repeat(60));
+        console.log(`🔍 [WEBHOOK TRACE] Looking up user for email: ${emailAddress}`);
+        console.log(`🔍 [WEBHOOK TRACE] historyId: ${historyId}`);
+
         const user = await findUserByEmail(emailAddress);
+
         if (!user) {
-          console.warn(`⚠️  User not found for email: ${emailAddress}`);
+          console.warn(`🔍 [WEBHOOK TRACE] ❌ User not found for email: ${emailAddress}`);
+          console.warn(`🔍 [WEBHOOK TRACE] This means either:`);
+          console.warn(`🔍 [WEBHOOK TRACE] 1. No user is registered with this email`);
+          console.warn(`🔍 [WEBHOOK TRACE] 2. Database connection issues`);
+          console.warn(`🔍 [WEBHOOK TRACE] 3. User exists but has no Google account linked`);
+          console.log('🔍'.repeat(60) + '\n');
           return;
         }
-        console.log(`✅ [DEBUG] Found user: ${user.id} for email: ${emailAddress}`);
+        console.log(`🔍 [WEBHOOK TRACE] ✅ Found user: ${user.id} for email: ${emailAddress}`);
+        console.log(`🔍 [WEBHOOK TRACE] User has refresh token: ${!!user.refreshToken}`);
+        console.log('🔍'.repeat(60) + '\n');
 
         // Check if we should use V2 system
         if (process.env.REALTIME_SYNC_V2 === 'true') {
@@ -354,8 +367,11 @@ async function sendRealTimeUpdates(userId, updateData) {
         timestamp: updateData.timestamp
       };
 
-      // Send via Socket.IO and SSE
-      try { socketIOService.newEmail(userId, emailUpdate.emailDetail); } catch (_) {}
+      // Send via Socket.IO and SSE - only for genuinely NEW emails
+      // For email status changes, use emailUpdated() instead of newEmail() to prevent duplicates
+      if (emailChange.type === 'added' && emailUpdate.emailDetail) {
+        try { socketIOService.newEmail(userId, emailUpdate.emailDetail); } catch (_) {}
+      }
       try { broadcastToUser(userId, emailUpdate); } catch (_) {}
     }
 

@@ -20,7 +20,7 @@ import {
 } from '../services/emailApi'
 import socketService from '../services/socketApi'
 import { useSession } from './useSession'
-import { useRealTimeEmailBridge } from '../components/email/RealTimeEmailBridge'
+// import { useRealTimeEmailBridge } from '../components/email/RealTimeEmailBridge' // DISABLED: Using Socket.IO only
 import { queryClient, queryKeys } from '../services/queryClient'
 
 // ✅ Helpers for matching and updating read status
@@ -99,6 +99,7 @@ export function useEmail() {
   const [selectedEmails, setSelectedEmails] = useState(new Set())
   const [spamUnreadCount, setSpamUnreadCount] = useState(0)
   const unsubscribeRef = useRef(null)
+  const processedEvents = useRef(new Set()) // Track processed events to prevent duplicates
 
   // 🚀 LOCAL STATE APPROACH: Calculate unread count directly from emails array
   const unreadCount = useMemo(() => {
@@ -177,11 +178,8 @@ export function useEmail() {
         const s = await getSpamStats()
         setSpamUnreadCount(s.unread || 0)
       } catch (_) { /* ignore */ }
-      if (folder === 'inbox') {
-        const stats = await getInboxStats()
-        setUnreadCount(stats.unread || 0)
-        if (Number.isFinite(stats.total)) setTotal(stats.total)
-      }
+      // 🚀 LOCAL STATE APPROACH: Don't override local unread count with server stats
+      // Unread count is calculated automatically from email list
     } catch (_) { /* state already set in loadEmails */ }
   }, [loadEmails])
 
@@ -212,11 +210,9 @@ export function useEmail() {
         const knownEnd = (nextPageNum - 1) * pageSize + (res?.emails?.length || 0)
         return Math.max(prev || 0, apiTotal, knownEnd)
       })
-      if (folder === 'inbox') {
-        const stats = await getInboxStats()
-        setUnreadCount(stats.unread || 0)
-        if (Number.isFinite(stats.total)) setTotal(stats.total)
-      } else if (folder === 'spam') {
+      // 🚀 LOCAL STATE APPROACH: Don't override local unread count with server stats
+      // Unread count is calculated automatically from email list
+      if (folder === 'spam') {
         const s = await getSpamStats()
         setSpamUnreadCount(s.unread || 0)
       }
@@ -242,11 +238,9 @@ export function useEmail() {
         const apiTotal = Number.isFinite(res?.total) ? res.total : 0
         return Math.max(prev || 0, apiTotal)
       })
-      if (folder === 'inbox') {
-        const stats = await getInboxStats()
-        setUnreadCount(stats.unread || 0)
-        if (Number.isFinite(stats.total)) setTotal(stats.total)
-      } else if (folder === 'spam') {
+      // 🚀 LOCAL STATE APPROACH: Don't override local unread count with server stats
+      // Unread count is calculated automatically from email list
+      if (folder === 'spam') {
         const s = await getSpamStats()
         setSpamUnreadCount(s.unread || 0)
       }
@@ -494,13 +488,8 @@ export function useEmail() {
               return updatedEmails;
             });
 
-            // Update unread count
-            if (typeof isRead === 'boolean') {
-              const delta = isRead ? -1 : 1;
-              console.log(`📡 [DEBUG SSE] 📊 Updating unread count by ${delta} (SSE)`);
-              setUnreadCount(prev => Math.max(0, prev + delta));
-              console.log(`📡 [DEBUG SSE] 📊 ✅ Unread count update completed`);
-            }
+            // 🚀 LOCAL STATE APPROACH: Unread count updates automatically when email list changes!
+            // No manual count updates needed
           } else {
             console.log(`📡 [DEBUG SSE] ❌ Invalid email_updated data - emailId: ${emailId}, isRead: ${isRead}`);
           }
@@ -624,23 +613,70 @@ export function useEmail() {
     })
 
     const unsubscribeNewEmail = socketService.addEventListener('newEmail', (data) => {
+      console.log('\n' + '🔥'.repeat(60));
+      console.log('🔥 [SOCKET TRACE] NEW EMAIL EVENT RECEIVED');
+      console.log('🔥'.repeat(60));
+      console.log('🔥 [SOCKET TRACE] Received data:', JSON.stringify(data, null, 2));
+
       if (data.email) {
         const formattedEmail = formatEmailForDisplay(data.email)
-        console.log('📧 [LOCAL COUNT] New email added, unread count will update automatically')
-        setEmails(prev => [formattedEmail, ...prev])
-        setTotal(prev => prev + 1)
-        // 🚀 LOCAL STATE APPROACH: Count updates automatically when email list changes!
+        const eventId = `socket-${formattedEmail.id || formattedEmail.messageId || formattedEmail.threadId}-${data.timestamp || Date.now()}`
 
-        // Update list cache (prepend) if present
-        try {
-          const key = queryKeys.emails('inbox', '')
-          queryClient.setQueryData(key, (existing) => {
-            if (!existing) return existing
-            const emails = Array.isArray(existing.emails) ? existing.emails : []
-            return { ...existing, emails: [formattedEmail, ...emails], total: (existing.total || emails.length) + 1 }
-          })
-        } catch (_) {}
+        console.log('🔥 [SOCKET TRACE] Event ID:', eventId);
+        console.log('🔥 [SOCKET TRACE] Already processed?', processedEvents.current.has(eventId));
+
+        // Check if already processed
+        if (processedEvents.current.has(eventId)) {
+          console.log('🔥 [SOCKET TRACE] ⚠️ Event already processed, skipping');
+          return;
+        }
+
+        // Mark as processed
+        processedEvents.current.add(eventId);
+
+        console.log('🔥 [SOCKET TRACE] Processing new email with chronological sorting...');
+
+        setEmails(prev => {
+          // Check if email already exists to prevent duplication (use current state)
+          const existsAlready = prev.some(email =>
+            matchesEmailByAnyId(email, formattedEmail.id) ||
+            matchesEmailByAnyId(email, formattedEmail.messageId) ||
+            matchesEmailByAnyId(email, formattedEmail.threadId)
+          );
+
+          if (existsAlready) {
+            console.log('🔥 [SOCKET TRACE] ⚠️ Email already exists in current list, skipping');
+            return prev; // Return unchanged list
+          }
+
+          // ✅ FIXED: Insert email in proper chronological position instead of top
+          const emailTimestamp = new Date(formattedEmail.timestamp || formattedEmail.date || Date.now()).getTime();
+
+          // Find the correct position to insert (emails should be sorted newest first)
+          let insertIndex = 0;
+          for (let i = 0; i < prev.length; i++) {
+            const existingTimestamp = new Date(prev[i].timestamp || prev[i].date || 0).getTime();
+            if (emailTimestamp > existingTimestamp) {
+              insertIndex = i;
+              break;
+            }
+            insertIndex = i + 1;
+          }
+
+          const newList = [
+            ...prev.slice(0, insertIndex),
+            formattedEmail,
+            ...prev.slice(insertIndex)
+          ];
+
+          console.log('🔥 [SOCKET TRACE] New email added at position:', insertIndex);
+          return newList;
+        });
+
+        setTotal(prev => prev + 1);
+        console.log('🔥 [SOCKET TRACE] ✅ Socket.IO new email processed successfully');
       }
+      console.log('🔥'.repeat(60) + '\n');
     })
 
     const unsubscribeEmailDeleted = socketService.addEventListener('emailDeleted', (data) => {
@@ -687,125 +723,16 @@ export function useEmail() {
     }
   }, [loadEmails, user, sessionLoading])
 
-  // Real-Time Email Bridge Integration (Gmail Pub/Sub → React State)
-  useRealTimeEmailBridge(
-    // 1) Immediate email status updates
-    (data) => {
-      console.log('🌉 [DEBUG BRIDGE] 📨 Real-Time Bridge emailStatusUpdate received:', JSON.stringify(data, null, 2));
-
-      const incomingId =
-        data.emailId || data.gmailMessageId || data.messageId || data.threadId || data.conversationId;
-      console.log('🌉 [DEBUG BRIDGE] Extracted ID:', incomingId);
-
-      if (!incomingId) {
-        console.warn('🌉 [DEBUG BRIDGE] ❌ No valid ID found in Bridge data:', data);
-        return;
-      }
-
-      console.log(`🌉 [DEBUG BRIDGE] 🔍 Looking for email with ID: ${incomingId}`);
-      console.log(`🌉 [DEBUG BRIDGE] Current emails in state:`, emails.map(e => ({
-        id: e.id,
-        threadId: e.threadId,
-        messageId: e.messageId,
-        isRead: e.isRead
-      })));
-
-      let foundMatch = false;
-      setEmails(prev => {
-        console.log(`🌉 [DEBUG BRIDGE] Processing ${prev.length} emails for match...`);
-        const updatedEmails = prev.map(email => {
-          const isMatch = matchesEmailByAnyId(email, incomingId);
-          if (isMatch) {
-            foundMatch = true;
-            console.log(`🌉 [DEBUG BRIDGE] ✅ MATCH FOUND:`, {
-              emailId: email.id,
-              threadId: email.threadId,
-              messageId: email.messageId,
-              currentIsRead: email.isRead,
-              newIsRead: data.isRead
-            });
-
-            if (typeof data.isRead === 'boolean') {
-              const updatedEmail = applyReadFlagAndLabels(email, data.isRead);
-              console.log(`🌉 [DEBUG BRIDGE] 🎨 BRIDGE COLOR FLIP - Email ${email.id}: ${email.isRead ? 'read' : 'unread'} → ${updatedEmail.isRead ? 'read' : 'unread'}`);
-              return updatedEmail;
-            }
-          }
-          return email;
-        });
-
-        if (!foundMatch) {
-          console.warn(`🌉 [DEBUG BRIDGE] ❌ NO MATCH FOUND for ID: ${incomingId}`);
-        }
-
-        console.log('🌉 [DEBUG BRIDGE] 📝 Email list updated via Real-Time Bridge, match found:', foundMatch);
-        return updatedEmails;
-      });
-
-      // 🚀 LOCAL STATE APPROACH: Count updates automatically when email list changes!
-    },
-    // 2) New emails
-    (data) => {
-      console.log('🌉 [DEBUG BRIDGE] 📧 NEW EMAIL received:', JSON.stringify(data, null, 2));
-
-      if (data.email) {
-        const formattedEmail = formatEmailForDisplay(data.email)
-        console.log('🌉 [DEBUG BRIDGE] 📧 NEW EMAIL: Adding to top of list:', {
-          id: formattedEmail.id,
-          subject: formattedEmail.subject?.substring(0, 50) + '...',
-          from: formattedEmail.from,
-          isRead: formattedEmail.isRead
-        });
-
-        setEmails(prev => {
-          console.log('🌉 [DEBUG BRIDGE] 📧 BEFORE adding new email - total emails:', prev.length);
-          const updated = [formattedEmail, ...prev];
-          console.log('🌉 [DEBUG BRIDGE] 📧 AFTER adding new email - total emails:', updated.length);
-          logEmailListState(updated, 'BRIDGE_NEW_EMAIL_ADDED', formattedEmail.id);
-          return updated;
-        });
-
-        setTotal(prev => {
-          const newTotal = prev + 1;
-          console.log('🌉 [DEBUG BRIDGE] 📊 Total count updated:', prev, '→', newTotal);
-          return newTotal;
-        });
-
-        // 🚀 LOCAL STATE APPROACH: Unread count updates automatically when email list changes!
-      } else {
-        console.warn('🌉 [DEBUG BRIDGE] ⚠️ New email received but no email data:', data);
-      }
-    },
-    // 3) Deletions
-    (data) => {
-      console.log('🌉 [DEBUG BRIDGE] 🗑️ EMAIL DELETION received:', data);
-      setEmails(prev => prev.filter(email => !(
-        email.id === data.emailId ||
-        email.threadId === data.emailId ||
-        email.messageId === data.emailId ||
-        email.conversationId === data.emailId
-      )))
-      setTotal(prev => Math.max(0, prev - 1))
-      console.log('🌉 [DEBUG BRIDGE] 🗑️ ✅ Email deletion processed');
-    },
-    // 4) 🚀 LOCAL STATE APPROACH: Ignore server count updates
-    ({ count }) => {
-      console.log('🌉 [DEBUG BRIDGE] 📊 LIVE COUNT update received (ignoring - using local count):', count);
-      // Count is calculated from email list, so we ignore server counts!
-    }
-  )
+  // Real-Time Email Bridge Integration (Gmail Pub/Sub → React State) - DISABLED: Using Socket.IO only
+  // useRealTimeEmailBridge(...) // DISABLED to prevent duplication with Socket.IO
+  console.log('🚀 [SOCKET-ONLY] RealTimeEmailBridge disabled - using Socket.IO only for real-time updates');
 
   // Keyboard shortcuts
   useEffect(() => {
     const handleKeyDown = (event) => {
       if (event.target.tagName === 'INPUT' || event.target.tagName === 'TEXTAREA') return
       switch (event.key) {
-        case 'a':
-          if (event.ctrlKey || event.metaKey) {
-            event.preventDefault()
-            selectAllEmails()
-          }
-          break
+        // Removed Ctrl+A shortcut - use checkbox instead
         case 'Escape':
           clearSelection()
           break

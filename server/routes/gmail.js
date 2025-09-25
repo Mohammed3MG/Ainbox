@@ -499,19 +499,44 @@ router.post('/gmail/mark-unread', requireAuth, async (req, res) => {
 
 // Move Gmail threads to Trash (delete)
 router.post('/gmail/trash', requireAuth, async (req, res) => {
+  console.log('🗑️ [TRASH] Request received:', {
+    body: req.body,
+    ids: req.body?.ids,
+    isArray: Array.isArray(req.body?.ids),
+    length: req.body?.ids?.length
+  });
+
   try {
     const ids = Array.isArray(req.body?.ids) ? req.body.ids : [];
-    if (!ids.length) return res.status(400).json({ error: 'ids required' });
+    console.log('🗑️ [TRASH] Processed ids:', ids);
+
+    if (!ids.length) {
+      console.log('❌ [TRASH] No IDs provided, returning 400');
+      return res.status(400).json({ error: 'ids required' });
+    }
     const oauth2Client = await getGoogleOAuthClientFromCookies(req);
     const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
     const uid = String(req.auth?.sub);
     let ok = 0;
     for (const id of ids) {
       try {
-        await gmail.users.threads.trash({ userId: 'me', id });
+        console.log(`🗑️ Attempting to move message ${id} to trash`);
+
+        // Use Gmail's messages.trash() API - this ONLY moves to trash, does not permanently delete
+        const result = await gmail.users.messages.trash({ userId: 'me', id });
+        console.log(`✅ Successfully moved message ${id} to trash:`, result.status);
+        console.log(`📋 Message ${id} is now in trash section and removed from inbox`);
+
         await readState.removeUnread(uid, 'gmail', id);
         ok += 1;
-      } catch (_) {}
+      } catch (error) {
+        console.error(`❌ Failed to move message ${id} to trash:`, {
+          message: error.message,
+          code: error.code,
+          status: error.status,
+          response: error.response?.data
+        });
+      }
     }
     // Invalidate cache for lists/threads and clear stats cache; broadcast row deletion
     try {
@@ -538,10 +563,151 @@ router.post('/gmail/trash', requireAuth, async (req, res) => {
         broadcastToUser(uid, { type: 'unread_count_updated', unread: stats.unread, total: stats.total });
       } catch (_) {}
     });
+
+    res.json({
+      ok,
+      total: ids.length,
+      success: true,
+      message: `${ok}/${ids.length} emails moved to trash (not permanently deleted)`
+    });
+
+    console.log(`🗑️ [TRASH] Completed: ${ok}/${ids.length} emails moved to trash`);
+  } catch (e) {
+    console.error('❌ [TRASH] Operation failed:', e);
+    return res.status(401).json({ error: 'Unable to move emails to trash' });
+  }
+});
+
+// Archive Gmail threads (remove from INBOX)
+router.post('/gmail/archive', requireAuth, async (req, res) => {
+  try {
+    const ids = Array.isArray(req.body?.ids) ? req.body.ids : [];
+    if (!ids.length) return res.status(400).json({ error: 'ids required' });
+    const oauth2Client = await getGoogleOAuthClientFromCookies(req);
+    const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
+    const uid = String(req.auth?.sub);
+
+    console.log(`📦 Archiving ${ids.length} threads for user ${uid}:`, ids.slice(0, 3));
+
+    const ok = await mapWithLimit(ids, 3, async (threadId) => {
+      try {
+        // Archive = remove INBOX label
+        await gmail.users.threads.modify({
+          userId: 'me',
+          id: threadId,
+          requestBody: { removeLabelIds: ['INBOX'] }
+        });
+        console.log(`✅ Thread ${threadId} archived successfully`);
+        return true;
+      } catch (err) {
+        console.error(`❌ Failed to archive thread ${threadId}:`, err.message);
+        return false;
+      }
+    });
+
+    console.log(`📦 Archive operation completed: ${ok.filter(Boolean).length}/${ids.length} successful`);
+
+    // Clear cache and notify
+    try {
+      try { await cache.del(`inbox:stats:gmail:${uid}`); } catch (_) {}
+      await emailCache.invalidateOnAction(uid, 'gmail', 'archive', ids);
+    } catch (_) {}
+
+    // Update counts and broadcast
+    setImmediate(async () => {
+      try {
+        const oauth2Client2 = await getGoogleOAuthClientFromCookies(req);
+        const stats = await computePrimaryInboxCounts(oauth2Client2);
+        await emailCache.setUserStats(uid, 'gmail', stats);
+        broadcastToUser(uid, { type: 'unread_count_updated', unread: stats.unread, total: stats.total });
+      } catch (_) {}
+    });
     return res.json({ ok, total: ids.length });
   } catch (e) {
-    console.error('gmail/trash failed:', e);
-    return res.status(401).json({ error: 'Unable to move to trash' });
+    console.error('gmail/archive failed:', e);
+    return res.status(401).json({ error: 'Unable to archive emails' });
+  }
+});
+
+// Permanently delete Gmail messages (for use in trash section)
+router.post('/gmail/delete-permanently', requireAuth, async (req, res) => {
+  console.log('🗑️ [PERMANENT DELETE] Request received:', {
+    body: req.body,
+    ids: req.body?.ids,
+    isArray: Array.isArray(req.body?.ids),
+    length: req.body?.ids?.length
+  });
+
+  try {
+    const ids = Array.isArray(req.body?.ids) ? req.body.ids : [];
+    console.log('🗑️ [PERMANENT DELETE] Processed ids:', ids);
+
+    if (!ids.length) {
+      console.log('❌ [PERMANENT DELETE] No IDs provided, returning 400');
+      return res.status(400).json({ error: 'ids required' });
+    }
+
+    const oauth2Client = await getGoogleOAuthClientFromCookies(req);
+    const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
+    const uid = String(req.auth?.sub);
+    let ok = 0;
+
+    for (const id of ids) {
+      try {
+        console.log(`💀 Permanently deleting message ${id}`);
+        const result = await gmail.users.messages.delete({ userId: 'me', id });
+        console.log(`✅ Successfully deleted message ${id} permanently:`, result.status);
+        await readState.removeUnread(uid, 'gmail', id);
+        ok += 1;
+      } catch (error) {
+        console.error(`❌ Failed to permanently delete message ${id}:`, {
+          message: error.message,
+          code: error.code,
+          status: error.status,
+          response: error.response?.data
+        });
+      }
+    }
+
+    // Invalidate cache for lists/threads and clear stats cache
+    try {
+      try { await cache.del(`inbox:stats:gmail:${uid}`); } catch (_) {}
+      await emailCache.invalidateOnAction(uid, 'gmail', 'delete', ids);
+    } catch (_) {}
+
+    // Instant Redis-backed update: decrement total quickly, then background resync
+    try {
+      const cur = (await emailCache.getUserStats(uid, 'gmail')) || null;
+      if (cur) {
+        const next = { ...cur, total: Math.max(0, (cur.total || 0) - ids.length) };
+        await emailCache.setUserStats(uid, 'gmail', next);
+      }
+    } catch (_) {}
+
+    // Broadcast deletion to connected clients
+    broadcastToUser(uid, {
+      type: 'emails_permanently_deleted',
+      ids: ids,
+      count: ok,
+      total: ids.length
+    });
+
+    res.json({
+      success: true,
+      deleted: ok,
+      total: ids.length,
+      message: `${ok}/${ids.length} emails permanently deleted`
+    });
+
+    console.log(`💀 [PERMANENT DELETE] Completed: ${ok}/${ids.length} successful`);
+
+  } catch (error) {
+    console.error('❌ [PERMANENT DELETE] Operation failed:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to permanently delete emails',
+      details: error.message
+    });
   }
 });
 
