@@ -97,22 +97,47 @@ router.post('/ai/suggest-replies', requireAuth, async (req, res) => {
   }
 });
 
-// Generate email content using Ollama
+// Generate email content using Ollama with conversational context
 router.post('/ai/generate-email', async (req, res) => {
-  const { prompt } = req.body;
+  const {
+    prompt,
+    conversation = {},
+    model = 'gemma2:2b',
+    maxTokens = 150,
+    temperature = 0.3
+  } = req.body;
 
   try {
-
     if (!prompt) {
-      return res.status(400).json({ error: 'Prompt is required' });
+      return res.status(400).json({
+        success: false,
+        error: 'Prompt is required'
+      });
     }
 
-    // Create an optimized prompt for tinyllama
-    const fullPrompt = `You are an expert email writer. Write a SHORT, CLEAR, and PROFESSIONAL email.
+    console.log('🤖 Generating conversational email with AI');
+    console.log('📝 Conversation context:', conversation.messageCount || 0, 'messages');
 
-USER REQUEST: "${prompt}"
+    // Create contextual prompt that considers conversation history
+    let contextualPrompt = `You are an expert email writer. Write a SHORT, CLEAR, and PROFESSIONAL email.
 
-RULES:
+USER REQUEST: "${prompt}"`;
+
+    // Add conversation context if available
+    if (conversation.messages && conversation.messages.length > 0) {
+      contextualPrompt += `\n\nCONVERSATION CONTEXT:`;
+      const recentMessages = conversation.messages.slice(-4); // Last 4 messages for context
+      recentMessages.forEach((msg, index) => {
+        if (msg.type === 'user') {
+          contextualPrompt += `\nUser asked: "${msg.content}"`;
+        } else if (msg.type === 'ai' && msg.emailContent) {
+          contextualPrompt += `\nAI generated: "${msg.emailContent.substring(0, 150)}..."`;
+        }
+      });
+      contextualPrompt += `\n\nImprove or refine based on this conversation history.`;
+    }
+
+    contextualPrompt += `\n\nRULES:
 1. Write ONLY the email body (no subject line)
 2. Keep it SHORT - maximum 3-4 sentences
 3. Use simple, clear language
@@ -121,31 +146,29 @@ RULES:
 6. End with appropriate closing (Best regards, Thank you, etc.)
 7. Stay focused on the main request
 8. Be ethical and respectful
+9. If this is a refinement request, improve the previous email accordingly
 
 WRITE THE EMAIL NOW:`;
 
-    console.log('🤖 Generating email with AI using tinyllama');
-
-    // Use the proper Ollama chat helper
     const messages = [
       {
         role: 'user',
-        content: fullPrompt
+        content: contextualPrompt
       }
     ];
 
     const out = await chat(messages, {
-      model: 'gemma2:2b',
+      model: model,
       options: {
-        temperature: 0.3,  // Lower temperature for more focused responses
-        num_predict: 150,  // Shorter responses (150 tokens max)
-        top_p: 0.9,       // Focus on most likely words
-        stop: ['USER:', 'RULES:', 'Human:', 'Assistant:', '\n\n\n']  // Stop tokens
+        temperature: Math.min(1.0, Math.max(0.1, temperature)),
+        num_predict: Math.min(300, Math.max(50, maxTokens)),
+        top_p: 0.9,
+        stop: ['USER:', 'RULES:', 'Human:', 'Assistant:', '\n\n\n']
       }
     });
 
-    // Clean up the generated text for tinyllama
-    let cleanedText = out.content
+    // Clean up the generated text
+    let emailContent = out.content
       .replace(/^(WRITE THE EMAIL NOW:|Email content:|Email:|Dear Sir\/Madam,?\s*)/i, '')
       .replace(/^\s*[\*\-•]\s*/gm, '') // Remove bullet points
       .replace(/^(Here is|Here's|Below is).*?:\s*/i, '') // Remove intro phrases
@@ -154,28 +177,117 @@ WRITE THE EMAIL NOW:`;
       .trim();
 
     // Ensure proper greeting
-    if (!cleanedText.match(/^(Dear|Hi|Hello|Good morning|Good afternoon)/i)) {
-      cleanedText = 'Dear [Name],\n\n' + cleanedText;
+    if (!emailContent.match(/^(Dear|Hi|Hello|Good morning|Good afternoon)/i)) {
+      emailContent = 'Dear [Name],\n\n' + emailContent;
     }
 
     // Ensure proper closing
-    if (!cleanedText.match(/(Best regards|Sincerely|Thank you|Best|Regards),?\s*$/i)) {
-      cleanedText = cleanedText + '\n\nBest regards,';
+    if (!emailContent.match(/(Best regards|Sincerely|Thank you|Best|Regards),?\s*$/i)) {
+      emailContent = emailContent + '\n\nBest regards,';
     }
 
-    res.json({
-      email: cleanedText,
-      model: 'gemma2:2b',
-      timestamp: new Date().toISOString()
-    });
+    // Generate explanation based on context
+    let explanation = 'Generated a professional email based on your request.';
+    if (conversation.messages && conversation.messages.length > 0) {
+      explanation = 'Refined the email based on our conversation history.';
+    }
+
+    // Generate dynamic suggestions based on the email content
+    console.log('🎯 Generating dynamic suggestions for email');
+    const suggestionsPrompt = `Given this email, suggest 4 improvements:
+
+EMAIL: "${emailContent}"
+
+REQUEST: "${prompt}"
+
+Suggest exactly 4 short improvements (3-5 words each):
+1. [suggestion]
+2. [suggestion]
+3. [suggestion]
+4. [suggestion]`;
+
+    try {
+      const suggestionsResponse = await chat([{ role: 'user', content: suggestionsPrompt }], {
+        model: 'gemma2:2b',
+        options: { temperature: 0.7, num_predict: 150 }
+      });
+
+      console.log('🤖 Raw AI suggestions response:', suggestionsResponse.content);
+
+      // Parse suggestions from AI response
+      let content = suggestionsResponse.content;
+
+      // Remove common intro phrases
+      content = content.replace(/^(Here are|Here's|Below are|I suggest).*?(suggestions?|improvements?):?\s*/i, '');
+      content = content.replace(/^(For this email|To improve this email).*?\s*/i, '');
+
+      let rawSuggestions = content
+        .split('\n')
+        .map(s => s.trim())
+        .map(s => s.replace(/^\d+\.\s*/, '')) // Remove numbering like "1. "
+        .map(s => s.replace(/^-\s*/, '')) // Remove dashes
+        .map(s => s.replace(/^\*\s*/, '')) // Remove asterisks
+        .map(s => s.replace(/^\[suggestion\]/, '')) // Remove placeholder text
+        .map(s => s.trim());
+
+      console.log('📝 Raw split suggestions:', rawSuggestions);
+
+      let filteredSuggestions = rawSuggestions
+        .filter(s => s.length > 2 && s.length < 60) // Better length limits
+        .filter(s => !s.toLowerCase().includes('suggestion')) // Remove placeholder lines
+        .filter(s => !s.toLowerCase().includes('improvement')) // Remove meta text
+        .filter(s => !s.toLowerCase().includes('here are')); // Remove intro text
+
+      console.log('🔍 Filtered suggestions:', filteredSuggestions);
+
+      let dynamicSuggestions = filteredSuggestions.slice(0, 4);
+
+      // Fallback if AI doesn't generate good suggestions
+      if (dynamicSuggestions.length < 3) {
+        console.log('⚠️ Not enough dynamic suggestions, using fallback. Count:', dynamicSuggestions.length);
+        dynamicSuggestions = [
+          "Make it more professional",
+          "Make it shorter",
+          "Add more details",
+          "Change the tone"
+        ];
+      }
+
+      console.log('✨ Final dynamic suggestions:', dynamicSuggestions);
+
+      res.json({
+        success: true,
+        emailContent: emailContent,
+        explanation: explanation,
+        suggestions: dynamicSuggestions,
+        conversationId: Date.now().toString(),
+        model: model,
+        timestamp: new Date().toISOString()
+      });
+
+    } catch (suggestionsError) {
+      console.log('⚠️ Suggestions generation failed, using fallback');
+      res.json({
+        success: true,
+        emailContent: emailContent,
+        explanation: explanation,
+        suggestions: [
+          "Make it more professional",
+          "Make it shorter",
+          "Add more details",
+          "Change the tone"
+        ],
+        conversationId: Date.now().toString(),
+        model: model,
+        timestamp: new Date().toISOString()
+      });
+    }
 
   } catch (error) {
     console.error('AI email generation error:', error);
 
-    // NO FALLBACK - Only real AI responses allowed
-    console.log('❌ Ollama failed - returning error instead of fallback template');
-
     return res.status(500).json({
+      success: false,
       error: 'AI generation failed',
       details: error.message,
       note: 'Ollama connection issue. Please check if Ollama is running and the model is available.'

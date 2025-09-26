@@ -23,7 +23,7 @@ import { Input } from '../ui/input';
 import { cn } from '../../lib/utils';
 import RecipientInput from './RecipientInput';
 import RichTextEditor from './RichTextEditor';
-import AIAssist from './AIAssist';
+import AiConversationChat from '../ai/AiConversationChat';
 import AttachmentManager from './AttachmentManager';
 import AttachButton from './AttachButton';
 import MiniColorPicker from './MiniColorPicker';
@@ -69,7 +69,7 @@ export default function ComposeBox({
   const [attachments, setAttachments] = useState([]);
   const [isSending, setIsSending] = useState(false);
   const [showAIAssist, setShowAIAssist] = useState(false);
-  const [height, setHeight] = useState(480);
+  const [height, setHeight] = useState(600);
   const [isDragOver, setIsDragOver] = useState(false);
 
   const composeRef = useRef(null);
@@ -409,10 +409,10 @@ export default function ComposeBox({
       style={{
         bottom: position.bottom,
         right: position.right,
-        width: 600,
+        width: 700,
         height: height,
         minHeight: 280,
-        maxHeight: '80vh'
+        maxHeight: '100vh'
       }}
       role="dialog"
       aria-label="Compose email"
@@ -799,54 +799,64 @@ export default function ComposeBox({
         />
       </div>
 
-      {/* AI Assist Panel - positioned absolutely over entire compose window */}
+      {/* AI Conversational Chat Panel - positioned absolutely over entire compose window */}
       {showAIAssist && (
-        <AIAssist
-          onInsert={(text) => {
-            // Convert plain text formatting to HTML for rich text editor
-            const formatTextToHTML = (plainText) => {
-              return plainText
-                // Convert line breaks to <br> tags
-                .replace(/\n\n/g, '</p><p>')  // Double line breaks = new paragraphs
-                .replace(/\n/g, '<br>')      // Single line breaks = <br>
+        <div className="absolute inset-0 bg-white z-50 rounded-lg shadow-lg border">
+          <AiConversationChat
+            onEmailGenerated={(text) => {
+              console.log('🔗 ComposeBox onEmailGenerated called with text:', text);
+              console.log('📝 Current editorContent before:', editorContent);
 
-                // Convert bullet points
-                .replace(/^[\s]*[-*•]\s+(.+)$/gm, '<li>$1</li>')  // Bullet points to list items
-                .replace(/(<li>.*<\/li>)/gs, '<ul>$1</ul>')       // Wrap in <ul> tags
-                .replace(/<\/ul>\s*<ul>/g, '')                    // Remove adjacent ul tags
+              // Convert plain text formatting to HTML for rich text editor
+              const formatTextToHTML = (plainText) => {
+                return plainText
+                  // Convert line breaks to <br> tags
+                  .replace(/\n\n/g, '</p><p>')  // Double line breaks = new paragraphs
+                  .replace(/\n/g, '<br>')      // Single line breaks = <br>
 
-                // Convert numbered lists
-                .replace(/^[\s]*(\d+)[\.\)]\s+(.+)$/gm, '<li>$2</li>')  // Numbered lists
-                .replace(/(<li>.*<\/li>)/gs, (match) => {
-                  if (!match.includes('<ul>')) return '<ol>' + match + '</ol>';
-                  return match;
-                })
-                .replace(/<\/ol>\s*<ol>/g, '')                    // Remove adjacent ol tags
+                  // Convert bullet points
+                  .replace(/^[\s]*[-*•]\s+(.+)$/gm, '<li>$1</li>')  // Bullet points to list items
+                  .replace(/(<li>.*<\/li>)/gs, '<ul>$1</ul>')       // Wrap in <ul> tags
+                  .replace(/<\/ul>\s*<ul>/g, '')                    // Remove adjacent ul tags
 
-                // Convert emphasis
-                .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>') // Bold **text**
-                .replace(/\*(.+?)\*/g, '<em>$1</em>')            // Italic *text*
-                .replace(/__(.+?)__/g, '<strong>$1</strong>')     // Bold __text__
-                .replace(/_(.+?)_/g, '<em>$1</em>')              // Italic _text_
+                  // Convert numbered lists
+                  .replace(/^[\s]*(\d+)[\.\)]\s+(.+)$/gm, '<li>$2</li>')  // Numbered lists
+                  .replace(/(<li>.*<\/li>)/gs, (match) => {
+                    if (!match.includes('<ul>')) return '<ol>' + match + '</ol>';
+                    return match;
+                  })
+                  .replace(/<\/ol>\s*<ol>/g, '')                    // Remove adjacent ol tags
 
-                // Wrap in paragraphs if not already
-                .replace(/^(?!<[pul])/gm, '<p>')                 // Start paragraphs
-                .replace(/(?<!>)$/gm, '</p>')                    // End paragraphs
-                .replace(/<p><\/p>/g, '')                        // Remove empty paragraphs
-                .replace(/<p>(<[ul])/g, '$1')                    // Don't wrap lists in p tags
-                .replace(/(<\/[ul]>)<\/p>/g, '$1')               // Don't wrap lists in p tags
+                  // Convert emphasis
+                  .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>') // Bold **text**
+                  .replace(/\*(.+?)\*/g, '<em>$1</em>')            // Italic *text*
+                  .replace(/__(.+?)__/g, '<strong>$1</strong>')     // Bold __text__
+                  .replace(/_(.+?)_/g, '<em>$1</em>')              // Italic _text_
 
-                // Clean up extra tags
-                .replace(/<p><br><\/p>/g, '<br>')                // Clean up line breaks in paragraphs
-                .trim();
-            };
+                  // Wrap in paragraphs if not already
+                  .replace(/^(?!<[pul])/gm, '<p>')                 // Start paragraphs
+                  .replace(/(?<!>)$/gm, '</p>')                    // End paragraphs
+                  .replace(/<p><\/p>/g, '')                        // Remove empty paragraphs
+                  .replace(/<p>(<[ul])/g, '$1')                    // Don't wrap lists in p tags
+                  .replace(/(<\/[ul]>)<\/p>/g, '$1')               // Don't wrap lists in p tags
 
-            const formattedHTML = formatTextToHTML(text);
-            setEditorContent(prev => prev + formattedHTML);
-            setShowAIAssist(false);
-          }}
-          onClose={() => setShowAIAssist(false)}
-        />
+                  // Clean up extra tags
+                  .replace(/<p><br><\/p>/g, '<br>')                // Clean up line breaks in paragraphs
+                  .trim();
+              };
+
+              const formattedHTML = formatTextToHTML(text);
+              console.log('🎨 Formatted HTML to be added:', formattedHTML);
+
+              setEditorContent(prev => {
+                const newContent = prev + formattedHTML;
+                console.log('📄 Setting new editorContent:', newContent);
+                return newContent;
+              });
+            }}
+            onClose={() => setShowAIAssist(false)}
+          />
+        </div>
       )}
     </div>
   );
