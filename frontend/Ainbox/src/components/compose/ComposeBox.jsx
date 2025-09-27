@@ -31,6 +31,8 @@ import { useDraftAutoSave } from '../../hooks/useDraftAutoSave';
 import { useAccessibility, useFocusManagement } from './AccessibilityProvider';
 import { useKeyboardShortcuts } from '../../hooks/useKeyboardShortcuts';
 import { useSession } from '../../hooks/useSession';
+import { useSmartCompletion } from '../../hooks/useSmartCompletion';
+import GhostTextOverlay from './GhostTextOverlay';
 
 const FONT_SIZES = [12, 14, 16, 18, 24];
 const FONT_FAMILIES = [
@@ -75,11 +77,83 @@ export default function ComposeBox({
   const composeRef = useRef(null);
   const editorRef = useRef(null);
   const subjectRef = useRef(null);
+  const editableElementRef = useRef(null);
+  const textChangeTimeoutRef = useRef(null);
+  const pendingCursorPositionRef = useRef(null);
 
   // Accessibility hooks
   const { announce, highContrast, reducedMotion } = useAccessibility();
   const { saveFocus, restoreFocus, trapFocus } = useFocusManagement();
   const { user } = useSession();
+
+  // Smart text completion
+  const {
+    handleTextChange: handleSmartTextChange,
+    applySuggestion,
+    hideSuggestion,
+    currentSuggestion,
+    isVisible: isSuggestionVisible,
+    isLoading: isSuggestionLoading
+  } = useSmartCompletion({
+    enableAI: true,
+    enablePatterns: true,
+    maxSuggestions: 1
+  });
+
+  // Effect to restore cursor position after React updates
+  useEffect(() => {
+    if (pendingCursorPositionRef.current !== null) {
+      const targetPosition = pendingCursorPositionRef.current;
+      pendingCursorPositionRef.current = null;
+
+      // Use requestAnimationFrame to ensure DOM is fully updated
+      requestAnimationFrame(() => {
+        const editableElement = document.querySelector('#compose-editor-container [contenteditable]');
+        if (editableElement) {
+          editableElement.focus();
+
+          const range = document.createRange();
+          const selection = window.getSelection();
+
+          // Use tree walker to find the correct position
+          const walker = document.createTreeWalker(
+            editableElement,
+            NodeFilter.SHOW_TEXT,
+            null,
+            false
+          );
+
+          let currentOffset = 0;
+          let targetNode = null;
+          let targetOffset = 0;
+
+          while (walker.nextNode()) {
+            const node = walker.currentNode;
+            const nodeLength = node.textContent.length;
+
+            if (currentOffset + nodeLength >= targetPosition) {
+              targetNode = node;
+              targetOffset = targetPosition - currentOffset;
+              break;
+            }
+            currentOffset += nodeLength;
+          }
+
+          if (targetNode) {
+            const safeOffset = Math.min(targetOffset, targetNode.textContent.length);
+            range.setStart(targetNode, safeOffset);
+            range.setEnd(targetNode, safeOffset);
+            selection.removeAllRanges();
+            selection.addRange(range);
+            console.log('✅ Cursor restored to position:', targetPosition);
+          }
+        }
+      });
+    }
+  }, [editorContent]);
+
+  // Removed test suggestion debug code
+
 
   // Auto-save hook
   const { saveStatus, lastSaved } = useDraftAutoSave({
@@ -593,15 +667,145 @@ export default function ComposeBox({
       </div>
 
       {/* Editor without toolbar */}
-      <div className="flex-1 flex flex-col min-h-0">
+      <div className="flex-1 flex flex-col min-h-0 relative" id="compose-editor-container">
         <RichTextEditor
           ref={editorRef}
           content={editorContent}
-          onChange={setEditorContent}
+          onChange={(content) => {
+            setEditorContent(content);
+
+            // Handle smart text completion with debouncing
+            if (textChangeTimeoutRef.current) {
+              clearTimeout(textChangeTimeoutRef.current);
+            }
+
+            textChangeTimeoutRef.current = setTimeout(() => {
+              const editableElement = document.querySelector('#compose-editor-container [contenteditable]');
+              editableElementRef.current = editableElement; // Store ref for ghost text
+
+              if (editableElement && editableElement.closest('.ai-conversation-chat') === null) {
+                  // Get cursor position
+                  const selection = window.getSelection();
+                  if (selection.rangeCount > 0) {
+                    const range = selection.getRangeAt(0);
+                    let position = 0;
+
+                    // Calculate cursor position in plain text
+                    try {
+                      const walker = document.createTreeWalker(
+                        editableElement,
+                        NodeFilter.SHOW_TEXT,
+                        null,
+                        false
+                      );
+
+                      let currentOffset = 0;
+                      while (walker.nextNode()) {
+                        const node = walker.currentNode;
+                        if (node === range.startContainer) {
+                          position = currentOffset + range.startOffset;
+                          break;
+                        }
+                        currentOffset += node.textContent.length;
+                      }
+                    } catch (error) {
+                      // Fallback: use range offset
+                      position = range.startOffset;
+                    }
+
+                    // Get plain text content
+                    const plainText = editableElement.textContent || '';
+
+                    // Create email context
+                    const emailContext = {
+                      subject: subject,
+                      recipients: recipients.to.map(r => r.email),
+                      isReply: !!replyTo
+                    };
+
+                    // Trigger smart completion
+                    console.log('🔍 Triggering smart completion:', { plainText, position, emailContext });
+                    handleSmartTextChange(plainText, position, emailContext);
+                  }
+                }
+            }, 100); // 100ms debounce
+          }}
           onAIAssist={() => setShowAIAssist(true)}
           showToolbar={false}
           className="text-base"
         />
+
+        {/* Ghost Text Overlay for Smart Completion */}
+        {console.log('🔍 ComposeBox GhostTextOverlay props:', {
+          targetElement: editableElementRef.current,
+          suggestion: currentSuggestion,
+          isSuggestionVisible,
+          showAIAssist,
+          finalIsVisible: isSuggestionVisible && !showAIAssist
+        })}
+        <GhostTextOverlay
+          targetElement={editableElementRef.current}
+          suggestion={currentSuggestion}
+          isVisible={isSuggestionVisible && !showAIAssist}
+          onAccept={(suggestion) => {
+            console.log('🎯 Tab pressed - accepting suggestion:', suggestion);
+
+            const editableElement = document.querySelector('#compose-editor-container [contenteditable]');
+            if (editableElement && editableElement === document.activeElement) {
+              const selection = window.getSelection();
+              if (selection.rangeCount > 0) {
+                const range = selection.getRangeAt(0);
+
+                // 1) Compute absolute caret offset BEFORE insert
+                const computeAbsoluteOffset = (root, node, offset) => {
+                  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null, false);
+                  let total = 0;
+                  while (walker.nextNode()) {
+                    const n = walker.currentNode;
+                    if (n === node) {
+                      return total + offset;
+                    }
+                    total += n.textContent.length;
+                  }
+                  return total; // fallback
+                };
+                const beforeAbs = computeAbsoluteOffset(editableElement, range.startContainer, range.startOffset);
+
+                // Preserve scroll so the line doesn't jump in view
+                const scrollTop = editableElement.scrollTop;
+
+                // 2) Insert the suggestion at caret
+                const textNode = document.createTextNode(suggestion);
+                range.insertNode(textNode);
+
+                // Move caret to after inserted text
+                range.setStartAfter(textNode);
+                range.collapse(true);
+                selection.removeAllRanges();
+                selection.addRange(range);
+
+                // Keep the same scroll
+                editableElement.scrollTop = scrollTop;
+
+                // 3) Set pending absolute caret for post-render restore
+                const afterAbs = beforeAbs + suggestion.length;
+                pendingCursorPositionRef.current = afterAbs;
+
+                // 4) ✅ Keep formatting by saving HTML, not plain text
+                const newHtml = editableElement.innerHTML || '';
+                setEditorContent(newHtml);
+
+                console.log('✅ Suggestion inserted, cursor stays on current line');
+
+                // Trigger cooldown in smart-complete (don't rely on its return)
+                applySuggestion(suggestion);
+              }
+            }
+          }}
+          onDismiss={hideSuggestion}
+        />
+
+
       </div>
 
       {/* Attachments - shown between editor and toolbar with scrolling */}

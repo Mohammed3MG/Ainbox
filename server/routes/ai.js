@@ -3,8 +3,21 @@ const { requireAuth } = require('../middleware/auth');
 const { chat } = require('../lib/ollama');
 const { summarizePrompt, suggestRepliesPrompt } = require('../prompts/email');
 const emailCache = require('../lib/emailCache');
+const nlpProcessor = require('../lib/nlpProcessor');
 
 const router = express.Router();
+
+/**
+ * Enhanced spell checking using NLP processor
+ */
+function correctSpelling(text) {
+  if (!text || typeof text !== 'string') return text;
+
+  // Use the enhanced NLP processor for intelligent text preprocessing
+  const result = nlpProcessor.preprocessText(text);
+
+  return result.cleaned;
+}
 
 // Summarize an email thread
 // POST /ai/summarize { subject, messages: [{ from, date, html, text }] }
@@ -23,18 +36,23 @@ router.post('/ai/summarize', requireAuth, async (req, res) => {
     const cached = await emailCache.getAISummary(messageId, messagesContent);
     if (cached) {
       console.log('📦 Serving AI summary from cache');
-      return res.json({ summary: cached });
+      // Apply spell checking to cached summary too
+      const correctedCached = correctSpelling(cached);
+      return res.json({ summary: correctedCached });
     }
 
     console.log('🤖 Generating new AI summary');
     const prompt = summarizePrompt(subject, messages);
     const out = await chat(prompt, { options: { temperature: 0.2 } });
 
-    // Cache the response
-    await emailCache.setAISummary(messageId, messagesContent, out.content);
+    // Apply spell checking to AI-generated summary
+    const correctedSummary = correctSpelling(out.content);
+
+    // Cache the corrected response
+    await emailCache.setAISummary(messageId, messagesContent, correctedSummary);
     console.log('💾 Cached AI summary');
 
-    return res.json({ summary: out.content });
+    return res.json({ summary: correctedSummary });
   } catch (e) {
     console.error('AI summarize failed:', e?.message);
     return res.status(500).json({ error: 'summarize_failed' });
@@ -72,7 +90,9 @@ router.post('/ai/suggest-replies', requireAuth, async (req, res) => {
     const cached = await emailCache.getAIReplies(messageId, content, tone);
     if (cached) {
       console.log('📦 Serving AI reply suggestions from cache');
-      return res.json({ suggestions: cached });
+      // Apply spell checking to cached suggestions too
+      const correctedCached = cached.map(suggestion => correctSpelling(suggestion));
+      return res.json({ suggestions: correctedCached });
     }
 
     console.log('🤖 Generating new AI reply suggestions');
@@ -86,11 +106,14 @@ router.post('/ai/suggest-replies', requireAuth, async (req, res) => {
 
     const out = await chat(prompt, { options: { temperature: 0.4 } });
 
-    // Cache the response
-    await emailCache.setAIReplies(messageId, content, tone, out.content);
+    // Apply spell checking to AI-generated suggestions
+    const correctedSuggestions = out.content.map(suggestion => correctSpelling(suggestion));
+
+    // Cache the corrected response
+    await emailCache.setAIReplies(messageId, content, tone, correctedSuggestions);
     console.log('💾 Cached AI reply suggestions');
 
-    return res.json({ suggestions: out.content });
+    return res.json({ suggestions: correctedSuggestions });
   } catch (e) {
     console.error('AI suggest failed:', e?.message);
     return res.status(500).json({ error: 'suggest_failed' });
@@ -255,11 +278,15 @@ Suggest exactly 4 short improvements (3-5 words each):
 
       console.log('✨ Final dynamic suggestions:', dynamicSuggestions);
 
+      // Apply spell checking to email content and suggestions
+      const correctedEmailContent = correctSpelling(emailContent);
+      const correctedSuggestions = dynamicSuggestions.map(suggestion => correctSpelling(suggestion));
+
       res.json({
         success: true,
-        emailContent: emailContent,
+        emailContent: correctedEmailContent,
         explanation: explanation,
-        suggestions: dynamicSuggestions,
+        suggestions: correctedSuggestions,
         conversationId: Date.now().toString(),
         model: model,
         timestamp: new Date().toISOString()
@@ -267,9 +294,13 @@ Suggest exactly 4 short improvements (3-5 words each):
 
     } catch (suggestionsError) {
       console.log('⚠️ Suggestions generation failed, using fallback');
+
+      // Apply spell checking to email content for fallback too
+      const correctedEmailContent = correctSpelling(emailContent);
+
       res.json({
         success: true,
-        emailContent: emailContent,
+        emailContent: correctedEmailContent,
         explanation: explanation,
         suggestions: [
           "Make it more professional",
@@ -291,6 +322,209 @@ Suggest exactly 4 short improvements (3-5 words each):
       error: 'AI generation failed',
       details: error.message,
       note: 'Ollama connection issue. Please check if Ollama is running and the model is available.'
+    });
+  }
+});
+
+
+
+// Enhanced instant pattern matching with NLP
+router.post('/api/instant-suggest', async (req, res) => {
+  const {
+    text,
+    cursorPosition,
+    emailContext = {},
+    maxSuggestions = 3
+  } = req.body;
+
+  try {
+    if (!text || cursorPosition === undefined) {
+      return res.status(400).json({
+        success: false,
+        error: 'Text and cursor position are required'
+      });
+    }
+
+    console.log('⚡ Enhanced pattern matching request');
+    console.log('📝 Context:', text.substring(Math.max(0, cursorPosition - 20), cursorPosition + 20));
+
+    // Don't suggest if cursor is in the middle of a word (prevents junk completions)
+    const afterCursor = text.substring(cursorPosition);
+    if (/^\w/.test(afterCursor)) {
+      return res.json({
+        success: true,
+        suggestions: [],
+        source: 'nlp-pattern',
+        responseTime: '<5ms',
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    // Use NLP processor for instant suggestions
+    const beforeCursor = text.substring(0, cursorPosition);
+    const suggestions = nlpProcessor.generateSuggestions(beforeCursor, cursorPosition, maxSuggestions);
+
+    console.log('✨ NLP pattern suggestions:', suggestions);
+
+    res.json({
+      success: true,
+      suggestions: suggestions,
+      source: 'nlp-pattern',
+      responseTime: '<5ms',
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('Pattern matching error:', error);
+
+    res.status(500).json({
+      success: false,
+      error: 'Pattern matching failed',
+      suggestions: [] // Return empty suggestions on error
+    });
+  }
+});
+
+// AI-powered suggestion endpoint with enhanced NLP
+router.post('/api/ai-suggest', async (req, res) => {
+  const {
+    text,
+    cursorPosition,
+    emailContext = {},
+    maxSuggestions = 1
+  } = req.body;
+
+  try {
+    if (!text || cursorPosition === undefined) {
+      return res.status(400).json({
+        success: false,
+        error: 'Text and cursor position are required'
+      });
+    }
+
+    console.log('🤖 AI suggestion request with enhanced NLP');
+    console.log('📝 Context length:', text.length, 'Cursor at:', cursorPosition);
+
+    // Use NLP processor for text analysis
+    const localBeforeCursor = text.substring(0, cursorPosition);
+    const preprocessResult = nlpProcessor.preprocessText(localBeforeCursor);
+    const beforeCursor = preprocessResult.cleaned;
+
+    console.log('🔧 NLP preprocessing:', {
+      original: localBeforeCursor.slice(-30),
+      cleaned: beforeCursor.slice(-30),
+      changes: preprocessResult.changes
+    });
+
+    // Analyze email context using NLP processor - use local cursor position
+    const context = nlpProcessor.analyzeContext(beforeCursor, beforeCursor.length);
+
+    console.log('📧 Email context analysis:', context);
+
+    // Generate suggestions using NLP processor
+    const nlpSuggestions = nlpProcessor.generateSuggestions(beforeCursor, cursorPosition, maxSuggestions);
+
+    if (nlpSuggestions.length > 0) {
+      console.log('✨ NLP suggestions:', nlpSuggestions);
+      return res.json({
+        success: true,
+        suggestions: nlpSuggestions,
+        source: 'nlp',
+        responseTime: '<10ms',
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    // Fallback to AI if no NLP suggestions
+    console.log('🤖 Falling back to AI for complex suggestions');
+
+    // Create intelligent prompt based on NLP analysis
+    let completionPrompt = `You are completing an email. Provide contextually appropriate suggestions.
+
+TEXT TO COMPLETE: "${beforeCursor.slice(-50)}"
+EMAIL CONTEXT: ${JSON.stringify(context)}`;
+
+    if (context.isGreeting) {
+      completionPrompt += `\nGUIDANCE: This is a greeting. Complete with names, titles, or greeting endings.`;
+    } else if (context.isOpening) {
+      completionPrompt += `\nGUIDANCE: This is an opening. Complete with purpose or polite expressions.`;
+    } else if (context.isBody) {
+      completionPrompt += `\nGUIDANCE: This is the main content. Focus on the specific topic.`;
+    } else if (context.isClosing) {
+      completionPrompt += `\nGUIDANCE: This is closing. Use appropriate closing phrases.`;
+    }
+
+    completionPrompt += `\n\nComplete with ONLY the next 2-5 words that logically continue:`;
+
+    // Use Ollama for AI suggestions
+    const startTime = Date.now();
+    const response = await chat([{
+      role: 'user',
+      content: completionPrompt
+    }], {
+      model: 'gemma2:2b',
+      options: {
+        temperature: 0.4,
+        num_predict: 15,
+        top_p: 0.9,
+        top_k: 40,
+        stop: ['\n', '.', 'GUIDANCE:', 'CONTEXT:', 'Complete with']
+      }
+    });
+
+    const responseTime = Date.now() - startTime;
+
+    // Clean up AI response
+    let suggestion = response.content
+      .replace(/^(COMPLETION:|Complete this|Here's a completion:)/i, '')
+      .replace(/^\s*["']|["']\s*$/g, '')
+      .replace(/^\s*[-•]\s*/, '')
+      .trim();
+
+    // Validate and fallback if needed
+    if (!suggestion || suggestion.length > 100 || suggestion.length < 2) {
+      const fallbacks = [
+        'and I look forward to your response.',
+        'Please let me know if you have any questions.',
+        'Thank you for your time.'
+      ];
+      suggestion = fallbacks[Math.floor(Math.random() * fallbacks.length)];
+    }
+
+    // Apply final spell checking
+    const correctedSuggestion = correctSpelling(suggestion);
+
+    console.log(`✨ AI suggestion (${responseTime}ms):`, correctedSuggestion);
+
+    res.json({
+      success: true,
+      suggestions: [correctedSuggestion],
+      source: 'ai',
+      model: 'gemma2:2b',
+      responseTime: `${responseTime}ms`,
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('AI suggestion error:', error);
+
+    // Provide fallback suggestions with spell checking
+    const fallbackSuggestions = [
+      'and I look forward to hearing from you.',
+      'Please feel free to reach out with any questions.',
+      'Thank you for your consideration.'
+    ];
+
+    const correctedFallbacks = fallbackSuggestions
+      .slice(0, maxSuggestions)
+      .map(suggestion => correctSpelling(suggestion));
+
+    res.json({
+      success: true,
+      suggestions: correctedFallbacks,
+      source: 'fallback',
+      error: error.message,
+      timestamp: new Date().toISOString()
     });
   }
 });
