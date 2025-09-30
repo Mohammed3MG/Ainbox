@@ -13,6 +13,7 @@ import {
   AlertCircle
 } from 'lucide-react';
 import { cn } from '../../lib/utils';
+import AttachmentItem from './AttachmentItem';
 
 const ALLOWED_TYPES = {
   'image/*': { icon: Image, label: 'Image', maxSize: 10 * 1024 * 1024 }, // 10MB
@@ -49,72 +50,7 @@ function formatFileSize(bytes) {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
 }
 
-function AttachmentItem({ attachment, onRemove }) {
-  const IconComponent = getFileIcon(attachment.type, attachment.name);
-  const isUploading = attachment.status === 'uploading';
-  const hasError = attachment.status === 'error';
-  const isComplete = attachment.status === 'complete';
-
-  return (
-    <div className={cn(
-      "flex items-center gap-3 p-3 bg-gray-50 rounded-lg border",
-      hasError && "border-red-200 bg-red-50",
-      isComplete && "border-green-200 bg-green-50"
-    )}>
-      <div className={cn(
-        "flex-shrink-0 w-8 h-8 rounded flex items-center justify-center",
-        hasError ? "bg-red-100" : isComplete ? "bg-green-100" : "bg-blue-100"
-      )}>
-        {isUploading ? (
-          <div className="w-4 h-4 border-2 border-blue-600 border-t-transparent rounded-full animate-spin" />
-        ) : hasError ? (
-          <AlertCircle className="w-4 h-4 text-red-600" />
-        ) : isComplete ? (
-          <CheckCircle className="w-4 h-4 text-green-600" />
-        ) : (
-          <IconComponent className={cn(
-            "w-4 h-4",
-            hasError ? "text-red-600" : isComplete ? "text-green-600" : "text-blue-600"
-          )} />
-        )}
-      </div>
-
-      <div className="flex-1 min-w-0">
-        <p className="text-sm font-medium text-gray-900 truncate">
-          {attachment.name}
-        </p>
-        <div className="flex items-center gap-2 text-xs text-gray-500">
-          <span>{formatFileSize(attachment.size)}</span>
-          {isUploading && attachment.progress !== undefined && (
-            <span>• {Math.round(attachment.progress)}%</span>
-          )}
-          {hasError && <span className="text-red-600">• Upload failed</span>}
-          {isComplete && <span className="text-green-600">• Uploaded</span>}
-        </div>
-
-        {/* Progress bar */}
-        {isUploading && attachment.progress !== undefined && (
-          <div className="mt-1 w-full bg-gray-200 rounded-full h-1">
-            <div
-              className="bg-blue-600 h-1 rounded-full transition-all duration-300"
-              style={{ width: `${attachment.progress}%` }}
-            />
-          </div>
-        )}
-      </div>
-
-      <Button
-        variant="ghost"
-        size="sm"
-        onClick={() => onRemove(attachment.id)}
-        className="p-1 h-6 w-6 hover:bg-red-100 hover:text-red-600"
-        aria-label={`Remove ${attachment.name}`}
-      >
-        <X className="w-3 h-3" />
-      </Button>
-    </div>
-  );
-}
+// Removed - using imported AttachmentItem component instead
 
 export default function AttachmentManager({ attachments, onChange, onAttachClick, dragOverlay = false }) {
   const fileInputRef = useRef(null);
@@ -275,7 +211,7 @@ export default function AttachmentManager({ attachments, onChange, onAttachClick
             Attachments ({attachments.length})
           </h4>
           <div className={cn(
-            "space-y-1 overflow-y-auto scrollbar-thin scrollbar-thumb-gray-300 scrollbar-track-transparent hover:scrollbar-thumb-gray-400",
+            "grid grid-cols-2 gap-1 overflow-y-auto scrollbar-thin scrollbar-thumb-gray-300 scrollbar-track-transparent hover:scrollbar-thumb-gray-400",
             // Set conservative max height to preserve text area - always scrollable after 2 files
             attachments.length <= 2 ? "max-h-none" :
             attachments.length <= 4 ? "max-h-24" :

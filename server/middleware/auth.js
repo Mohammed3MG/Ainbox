@@ -22,6 +22,7 @@ async function requireAuth(req, res, next) {
     try {
       const payload = jwt.verify(token, process.env.JWT_ACCESS_SECRET);
       req.auth = payload;
+      req.user = { id: Number(payload.sub) };
       return next();
     } catch (_) {
        return res.status(401).json({ error: "Invalid token" });
@@ -73,6 +74,7 @@ async function requireAuth(req, res, next) {
     res.cookie('refresh_token', newRefreshPlain, cookieOpts(msFromExp(process.env.JWT_REFRESH_EXPIRES)));
 
     req.auth = require('jsonwebtoken').verify(newAccess, process.env.JWT_ACCESS_SECRET);
+    req.user = { id: userId };
     return next();
   } catch (err) {
     return res.status(401).json({ error: 'Invalid/expired token' });

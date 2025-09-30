@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useNavigate, useLocation } from 'react-router-dom'
 import {
   Inbox,
   Star,
@@ -8,12 +9,14 @@ import {
   Trash2,
   ShieldAlert,
   Plus,
-  Circle
+  Circle,
+  Calendar
 } from 'lucide-react'
 import { cn } from '../../lib/utils'
 import { Badge } from '../ui/badge'
 import { Button } from '../ui/button'
 import { Progress } from '../ui/progress'
+import useNotifications from '../../hooks/useNotifications'
 
 const sidebarItems = [
   { id: 'inbox', label: 'Inbox', icon: Inbox, count: 2, active: true },
@@ -34,14 +37,57 @@ const labels = [
 
 export default function EmailSidebar({ activeFolder, onFolderChange, onCompose, inboxUnread = 0, spamUnread = 0 }) {
   const [storageUsed] = useState(33)
+  const navigate = useNavigate()
+  const location = useLocation()
+  const { unreadCount } = useNotifications()
+
+  // Determine if we're on calendar page
+  const isCalendarPage = location.pathname === '/calendar'
+
+  const handleNavigation = (item) => {
+    if (item.id === 'calendar') {
+      navigate('/calendar')
+    } else {
+      // Navigate to dashboard for email folders
+      if (location.pathname !== '/dashboard') {
+        navigate('/dashboard')
+      }
+      onFolderChange(item.id)
+    }
+  }
 
   return (
     <div className="w-50 bg-white border-r border-gray-200 flex flex-col h-screen overflow-hidden">
       {/* Logo */}
- 
+
 
       {/* Navigation */}
-      <div className="flex-shrink-0 p-4 space-y-1">
+      <div className="flex-shrink-0 p-4 space-y-1">{/* Calendar Navigation */}
+        <button
+          onClick={() => handleNavigation({ id: 'calendar' })}
+          className={cn(
+            "w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors cursor-pointer",
+            isCalendarPage
+              ? "bg-gray-900 text-white"
+              : "text-gray-700 hover:bg-gray-100"
+          )}
+        >
+          <Calendar className="w-4 h-4" />
+          <span className="flex-1 text-left">Calendar</span>
+          {unreadCount > 0 && (
+            <span className={cn(
+              "text-xs font-medium px-2 py-1 rounded-full",
+              isCalendarPage
+                ? "bg-white text-gray-900"
+                : "bg-red-500 text-white"
+            )}>
+              {unreadCount}
+            </span>
+          )}
+        </button>
+
+        {/* Divider */}
+        <div className="border-t border-gray-200 my-2"></div>
         {sidebarItems.map((item) => {
           const Icon = item.icon
           const isActive = activeFolder === item.id
@@ -51,7 +97,7 @@ export default function EmailSidebar({ activeFolder, onFolderChange, onCompose, 
           return (
             <button
               key={item.id}
-              onClick={() => onFolderChange(item.id)}
+              onClick={() => handleNavigation(item)}
               className={cn(
                 "w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors cursor-pointer",
                 isActive

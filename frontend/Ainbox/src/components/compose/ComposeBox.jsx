@@ -34,6 +34,43 @@ import { useSession } from '../../hooks/useSession';
 import { useSmartCompletion } from '../../hooks/useSmartCompletion';
 import GhostTextOverlay from './GhostTextOverlay';
 
+// Smart Pattern Learning Functions
+const trackSuggestionShown = async (userId, suggestion, context) => {
+  try {
+    await fetch('/api/patterns/track-shown', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId, suggestion, context })
+    });
+  } catch (error) {
+    console.error('Error tracking suggestion shown:', error);
+  }
+};
+
+const trackSuggestionAccepted = async (userId, suggestion, context, responseTime) => {
+  try {
+    await fetch('/api/patterns/track-accepted', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId, suggestion, context, responseTime })
+    });
+  } catch (error) {
+    console.error('Error tracking suggestion accepted:', error);
+  }
+};
+
+const trackSuggestionRejected = async (userId, suggestion, context, responseTime) => {
+  try {
+    await fetch('/api/patterns/track-rejected', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId, suggestion, context, responseTime })
+    });
+  } catch (error) {
+    console.error('Error tracking suggestion rejected:', error);
+  }
+};
+
 const FONT_SIZES = [12, 14, 16, 18, 24];
 const FONT_FAMILIES = [
   { label: 'System', value: 'system-ui, -apple-system, sans-serif' },
@@ -86,6 +123,10 @@ export default function ComposeBox({
   const { saveFocus, restoreFocus, trapFocus } = useFocusManagement();
   const { user } = useSession();
 
+  // Pattern learning tracking state
+  const [suggestionStartTime, setSuggestionStartTime] = useState(null);
+  const [lastShownSuggestion, setLastShownSuggestion] = useState(null);
+
   // Smart text completion
   const {
     handleTextChange: handleSmartTextChange,
@@ -99,6 +140,26 @@ export default function ComposeBox({
     enablePatterns: true,
     maxSuggestions: 1
   });
+
+  // Track when suggestions are shown/hidden
+  useEffect(() => {
+    if (isSuggestionVisible && currentSuggestion && user?.id) {
+      // Track suggestion shown
+      if (lastShownSuggestion !== currentSuggestion) {
+        setSuggestionStartTime(Date.now());
+        setLastShownSuggestion(currentSuggestion);
+
+        const context = {
+          textLength: editorContent?.length || 0,
+          cursorPosition: editorContent?.length || 0,
+          emailType: 'compose'
+        };
+
+        trackSuggestionShown(user.id, currentSuggestion, context);
+        console.log('📊 Tracked suggestion shown:', currentSuggestion);
+      }
+    }
+  }, [isSuggestionVisible, currentSuggestion, user?.id, editorContent, lastShownSuggestion]);
 
   // Effect to restore cursor position after React updates
   useEffect(() => {
@@ -750,6 +811,18 @@ export default function ComposeBox({
           onAccept={(suggestion) => {
             console.log('🎯 Tab pressed - accepting suggestion:', suggestion);
 
+            // Track suggestion acceptance
+            if (user?.id && suggestionStartTime) {
+              const responseTime = Date.now() - suggestionStartTime;
+              const context = {
+                textLength: editorContent?.length || 0,
+                cursorPosition: editorContent?.length || 0,
+                emailType: 'compose'
+              };
+              trackSuggestionAccepted(user.id, suggestion, context, responseTime);
+              console.log('✅ Tracked suggestion accepted:', suggestion, 'Response time:', responseTime + 'ms');
+            }
+
             const editableElement = document.querySelector('#compose-editor-container [contenteditable]');
             if (editableElement && editableElement === document.activeElement) {
               const selection = window.getSelection();
@@ -802,7 +875,21 @@ export default function ComposeBox({
               }
             }
           }}
-          onDismiss={hideSuggestion}
+          onDismiss={() => {
+            // Track suggestion rejection
+            if (user?.id && lastShownSuggestion && suggestionStartTime) {
+              const responseTime = Date.now() - suggestionStartTime;
+              const context = {
+                textLength: editorContent?.length || 0,
+                cursorPosition: editorContent?.length || 0,
+                emailType: 'compose'
+              };
+              trackSuggestionRejected(user.id, lastShownSuggestion, context, responseTime);
+              console.log('❌ Tracked suggestion rejected:', lastShownSuggestion, 'Response time:', responseTime + 'ms');
+            }
+
+            hideSuggestion();
+          }}
         />
 
 

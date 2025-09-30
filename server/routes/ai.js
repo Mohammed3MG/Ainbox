@@ -4,8 +4,12 @@ const { chat } = require('../lib/ollama');
 const { summarizePrompt, suggestRepliesPrompt } = require('../prompts/email');
 const emailCache = require('../lib/emailCache');
 const nlpProcessor = require('../lib/nlpProcessor');
+const PatternLearning = require('../lib/patternLearning');
 
 const router = express.Router();
+
+// Initialize pattern learning system
+const patternLearning = new PatternLearning();
 
 /**
  * Enhanced spell checking using NLP processor
@@ -328,14 +332,16 @@ Suggest exactly 4 short improvements (3-5 words each):
 
 
 
-// Enhanced instant pattern matching with NLP
-router.post('/api/instant-suggest', async (req, res) => {
+// Enhanced instant pattern matching with NLP + Personalized Learning
+router.post('/api/instant-suggest', requireAuth, async (req, res) => {
   const {
     text,
     cursorPosition,
     emailContext = {},
     maxSuggestions = 3
   } = req.body;
+
+  const startTime = Date.now();
 
   try {
     if (!text || cursorPosition === undefined) {
@@ -345,7 +351,8 @@ router.post('/api/instant-suggest', async (req, res) => {
       });
     }
 
-    console.log('⚡ Enhanced pattern matching request');
+    const userId = req.user?.id;
+    console.log('⚡ Smart suggestion request for user:', userId);
     console.log('📝 Context:', text.substring(Math.max(0, cursorPosition - 20), cursorPosition + 20));
 
     // Don't suggest if cursor is in the middle of a word (prevents junk completions)
@@ -354,24 +361,74 @@ router.post('/api/instant-suggest', async (req, res) => {
       return res.json({
         success: true,
         suggestions: [],
-        source: 'nlp-pattern',
+        source: 'smart-nlp',
         responseTime: '<5ms',
         timestamp: new Date().toISOString()
       });
     }
 
-    // Use NLP processor for instant suggestions
     const beforeCursor = text.substring(0, cursorPosition);
-    const suggestions = nlpProcessor.generateSuggestions(beforeCursor, cursorPosition, maxSuggestions);
+    const context = {
+      ...emailContext,
+      textLength: text.length,
+      cursorPosition,
+      emailType: 'compose'
+    };
 
-    console.log('✨ NLP pattern suggestions:', suggestions);
+    // Combine personalized + NLP suggestions
+    let allSuggestions = [];
+
+    // 1. Get personalized suggestions (priority)
+    if (userId) {
+      try {
+        const personalizedSuggestions = await patternLearning.getPersonalizedSuggestions(
+          userId,
+          beforeCursor,
+          context,
+          Math.ceil(maxSuggestions / 2)
+        );
+
+        if (personalizedSuggestions.length > 0) {
+          console.log('🎯 Personalized suggestions:', personalizedSuggestions.map(s => s.text));
+          allSuggestions.push(...personalizedSuggestions.map(s => s.text));
+        }
+      } catch (personalError) {
+        console.warn('Warning: Personalized suggestions failed:', personalError.message);
+      }
+    }
+
+    // 2. Get NLP pattern suggestions (fallback/supplement)
+    const nlpSuggestions = nlpProcessor.generateSuggestions(beforeCursor, cursorPosition, maxSuggestions);
+    console.log('✨ NLP pattern suggestions:', nlpSuggestions);
+
+    // 3. Merge and deduplicate suggestions
+    allSuggestions.push(...nlpSuggestions);
+
+    // Remove duplicates (case-insensitive)
+    const uniqueSuggestions = [];
+    const seen = new Set();
+
+    for (const suggestion of allSuggestions) {
+      const normalized = suggestion.toLowerCase().trim();
+      if (!seen.has(normalized) && suggestion.trim().length > 0) {
+        seen.add(normalized);
+        uniqueSuggestions.push(suggestion.trim());
+      }
+    }
+
+    // Limit to maxSuggestions
+    const finalSuggestions = uniqueSuggestions.slice(0, maxSuggestions);
+
+    const responseTime = Date.now() - startTime;
+    console.log(`🚀 Smart suggestions (${responseTime}ms):`, finalSuggestions);
 
     res.json({
       success: true,
-      suggestions: suggestions,
-      source: 'nlp-pattern',
-      responseTime: '<5ms',
-      timestamp: new Date().toISOString()
+      suggestions: finalSuggestions,
+      source: finalSuggestions.length > nlpSuggestions.length ? 'smart-personalized' : 'smart-nlp',
+      responseTime: `${responseTime}ms`,
+      timestamp: new Date().toISOString(),
+      hasPersonalized: userId && finalSuggestions.length > nlpSuggestions.length
     });
 
   } catch (error) {

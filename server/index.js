@@ -19,8 +19,14 @@ const cookieParser = require('cookie-parser');
 const apiV1 = require('./routes/api_v1');
 const aiRoutes = require('./routes/ai');
 const syncRoutes = require('./routes/sync');
+const patternsRoutes = require('./routes/patterns');
+const calendarRoutes = require('./routes/calendar');
+const notificationRoutes = require('./routes/notifications');
+const conflictRoutes = require('./routes/conflicts');
+const reminderRoutes = require('./routes/reminders');
 const gmailWebhook = require('./routes/webhooks/gmail');
 const socketIOService = require('./lib/socketio');
+const ReminderService = require('./lib/reminderService');
 
 // Import new scaling components (optional - fallback if not available)
 let connectionManager, smartCache, jobQueue, rateLimiter;
@@ -107,6 +113,11 @@ app.use(otherRouter);
 app.use('/api/v1', apiV1);
 app.use(aiRoutes);
 app.use('/sync', syncRoutes);
+app.use('/api/patterns', patternsRoutes);
+app.use('/api/calendar', calendarRoutes);
+app.use('/api/notifications', notificationRoutes);
+app.use('/api/conflicts', conflictRoutes);
+app.use('/api/reminders', reminderRoutes);
 app.use('/webhooks', gmailWebhook);
 // app.use('/api', require('./routes/emailContent')); // Temporarily disabled for debugging
 // app.use('/api/emails', emailStatusRoutes);
@@ -185,6 +196,11 @@ async function startHttp(app) {
       // Initialize Socket.IO with the HTTP server
       socketIOService.initialize(server);
       console.log(`🚀 Socket.IO initialized on HTTP server port ${port}`);
+
+      // Initialize reminder service
+      const reminderService = new ReminderService();
+      reminderService.initializeReminderJobs();
+      console.log(`🔔 Reminder service initialized`);
 
     return server; // Return server instance
   } catch (e) {
